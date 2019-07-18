@@ -247,9 +247,13 @@ class Generator(keras.Model):
 
 		if "loss" in kwargs.keys(): raise Exception("Currently only supports training with maximum likelihood. Please leave loss unspecified, e.g. 'model.compile()'. ")
 
-		# Add a last layer that combines all intermediate outputs together in a last layer. 
-		# Flatten all outputs, combine, then reshape to input size (handle discrete bijection 
-		# which makes size smaller). 
+		# In the case of Multi-Scale architecture, there will be multiple outputs. 
+		# The computations inside the loss function assumes there is just a one output. 
+		# This is handled by flattening, combining and finally reshaping the outputs 
+		# into one single output. In the simple case the shape of the final output is 
+		# that of the input; a more complicated case happens when the model has Discrete 
+		# Bijections, in this case, it reshapes to the output shape of the last Discrete Bijection. 
+		# For now it is assumed NaturalBijection is the only Discrete Bijection. TODO: refactor with abstract class. 
 		self.outputs = [tf.reshape(output, (tf.shape(output)[0], np.prod(output.shape[1:]))) for output in self.outputs]
 		self.outputs = tf.concat(self.outputs, axis=-1) # concatenated. 
 
@@ -259,8 +263,8 @@ class Generator(keras.Model):
 			if isinstance(layer, invtf.discrete_bijections.NaturalBijection): 
 				h, w, c = layer.output_shape[1:]
 
-		self.outputs = [tf.reshape(self.outputs, (tf.shape(self.outputs)[0], h, w, c))] 
-
+		self.outputs 		= [tf.reshape(self.outputs, (tf.shape(self.outputs)[0], h, w, c))] 
+		self.output_names 	= [self.output_names[0]] 
 
 		kwargs['optimizer'] = optimizer
 		kwargs['loss'] 		= self.loss 
@@ -270,7 +274,7 @@ class Generator(keras.Model):
 		def lg_perfect(y_true, y_pred): return self.loss_log_latent_density(y_true, self.latent.sample(shape=tf.shape(y_pred))) 
 		def lg_vardeqloss(y_true, y_pred): return self.loss_log_var_dequant(y_true, y_pred)
 
-		kwargs['metrics'] = []#lg_det, lg_latent, lg_perfect, lg_vardeqloss]
+		kwargs['metrics'] = [lg_det , lg_latent, lg_perfect, lg_vardeqloss]
 
 		super(Generator, self).compile(**kwargs)
 
