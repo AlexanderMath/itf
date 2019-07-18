@@ -17,11 +17,10 @@ g.add(invtf.layers.Squeeze())
 
 for i in range(10): 
 	g.add(invtf.layers.ActNorm())
-	g.add(invtf.layers.Inv1x1Conv()) 
 	g.add(invtf.layers.Conv3DCirc())
 	g.add(invtf.layers.AdditiveCouplingReLU()) 
 	
-	if i == 2 or i == 5 or i == 7: g.add(invtf.layers.MultiScale())
+	if i == 5: g.add(invtf.layers.MultiScale())
 
 # Prepare model for training and print summary. 
 g.compile()  
