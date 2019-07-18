@@ -222,6 +222,9 @@ class Generator(keras.Model):
 				training. To make sure the different terms are comparable normalization is handled
 				inside each function. 
 
+			TODO:
+				Make a function that computes loss given X and not given self.predict(X). 
+
 			
 			[1] Flow++: Improving Flow-Based Generative Models with 			https://arxiv.org/pdf/1902.00275
 				Variational Dequantization and Architecture Design
@@ -229,6 +232,33 @@ class Generator(keras.Model):
 
 		"""
 		return self.loss_log_det(y_true, y_pred) + self.loss_log_latent_density(y_true, y_pred) + self.loss_log_var_dequant(y_true, y_pred)
+
+	def print_loss(self, X): 
+		"""
+			Computes and prints all terms of loss given X. This is different to loss(..)
+			which takes the encoding of X, that is, it takes model.predict(X). 
+
+			Arguments: 	
+				X:		Input data, typically NumPy array. 
+			
+			Returns:
+				Negative log likelihood of the model on X. 
+
+			Side effects: 
+				Prints the negative log likelihood. 
+		"""
+		pred = self.encode(X).reshape(X.shape)
+
+		lg_det = self.loss_log_det(X, pred).numpy() 
+		lg_den = self.loss_log_latent_density(X, pred).numpy()
+		lg_var = self.loss_log_var_dequant(X, pred).numpy()
+		print("Determinant:    \t", lg_det)
+		print("Latent Density: \t", lg_den)
+		print("Variational Deq:\t", lg_var)
+		print("-----------------------------------")
+		print("Total Loss:     \t", lg_det + lg_den + lg_var)
+		return lg_det+lg_den+lg_var, lg_det, lg_den, lg_var
+	
 
 
 	def compile(self, optimizer=keras.optimizers.Adam(0.001), **kwargs):	
@@ -743,7 +773,8 @@ class Generator(keras.Model):
 				the normalization divides by 127.5 and substracts 1/2. 
 
 		"""
-	
+		self.print_loss(X[:100])
+
 		fig, ax = plt.subplots(1, 4)
 		for i in range(4): ax[i].axis("off")
 		img_shape = X.shape[1:]
