@@ -264,7 +264,7 @@ class Generator(keras.Model):
 				h, w, c = layer.output_shape[1:]
 
 		self.outputs 		= [tf.reshape(self.outputs, (tf.shape(self.outputs)[0], h, w, c))] 
-		self.output_names 	= [self.output_names[0]] 
+		self.output_names 	= [self.output_names[-1]] 
 
 		kwargs['optimizer'] = optimizer
 		kwargs['loss'] 		= self.loss 
