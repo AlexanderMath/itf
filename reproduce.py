@@ -1,5 +1,5 @@
-from invtf.dataset 	import *
-from invtf.models import *
+from invtf.datasets import *
+from invtf.models 	import *
 import argparse
 import os 
 
@@ -24,21 +24,21 @@ if __name__ == "__main__":
 
 	# Load Dataset (refactor into just giving args.problem and we get data/imgshape) 
 	if args.problem == "mnist": 
-		X = mnist().images()
+		X = mnist()
 		img_shape = X.shape[1:-1]
 	if args.problem in ["fmnist", "fashion_mnist","fashionmnist", "fasion-mnist"]: 
-		X = fmnist().images()
+		X = fmnist()
 		img_shape = X.shape[1:-1]
 	if args.problem in ["cifar10", "cifar"]:  
-		X = cifar10().images()
+		X = cifar10()
 		img_shape = X.shape[1:]
 	if args.problem == "cifar100":  
-		X = cifar100().images()
+		X = cifar100()
 		img_shape = X.shape[1:]
 
 	# TO BE IMPLEMENTED
 	if args.problem in ["celeba", "celeb", "faces"]:  
-		X = celeba.load(5000).astype(np.float32)[:, ::8, ::8, :]
+		X = celeba(n=5000, resolution=32)
 		print(X.shape)
 		img_shape = X.shape[1:]
 	if args.problem == "imagenet32":  raise NotImplementedError()
@@ -77,7 +77,7 @@ if __name__ == "__main__":
 
 
 	# Train model for epochs iterations. 
-	epochs = 1000000
+	epochs = 100
 	for i in range(epochs): 
 
 		history = g.fit(X, batch_size=128, epochs=1)	
@@ -121,7 +121,7 @@ if __name__ == "__main__":
 			fakes 		= g.sample(5, fix_latent=True, std=current_std)
 			ax_fakes[0, k].set_title( current_std )
 			for l in range(5): 
-				ax_fakes[k,l].imshow(fakes[l])
+				ax_fakes[k,l].imshow(fakes[l]/255)
 
 		plt.pause(.1)
 

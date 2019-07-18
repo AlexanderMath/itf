@@ -167,64 +167,42 @@ class RealNVP():
 class Conv3D(): 
 
 	"""
-		Curiously they don't use residual networks in coupling layers as RealNVP does. 
+			Currently only utilize around 10 % of GPU with batchsize 32.
+			with batchsize 512 it is around 30. TODO: Fix that.
 
 	""" 
 
 	def model(X, verbose=False):  
 
-		# Glow details can be found at : https://github.com/openai/glow/blob/master/model.py#L376
-		default_initializer = keras.initializers.RandomNormal(stddev=0.05)
-		width 				= 128 # width in glow is 512 but we lowered for speed; how much does this hurt performance? 
-		c 					= X.shape[-1]
 
 		input_shape = X.shape[1:]
-		d 			= np.prod(input_shape)
 
-		g = invtf.Generator(latent.Normal(d)) 
-
-		# Pre-process steps. 
-		g.add(keras.layers.InputLayer(input_shape=input_shape))
-
+		g = invtf.Generator() 
 
 		# seems to work, but it is a bit unstable. 
-		#g.add(ReduceNumBits(bits=3))
-		g.add(Squeeze())
-		c = 4*c
-		#g.add(invtf.discrete_bijections.NaturalBijection()) 
-		#c = c//2
-
+		g.add(Squeeze(input_shape=input_shape))
 		g.add(UniformDequantize	()) 
 		g.add(Normalize			())  
 
-		# Build model using additive coupling layers. 
+		for j in range(10):  
+			g.add(ActNorm())
+			g.add(Conv3DCirc())  
+			g.add(AdditiveCouplingReLU(part=0, sign=+1))
 
-		for i in range(0, 2): 
+			g.add(ActNorm())
+			g.add(Conv3DCirc()) 
+			g.add(AdditiveCouplingReLU(part=0, sign=-1))
 
-			for j in range(4): 
+			g.add(ActNorm())
+			g.add(Conv3DCirc())  
+			g.add(AdditiveCouplingReLU(part=1, sign=+1))
 
-				#g.add(ActNorm())
-				#g.add(Inv1x1Conv()) 
-				g.add(Conv3DCirc())  # change to residual.
-				g.add(AdditiveCouplingReLU(part=j%2, sign=+1, strategy=SplitChannelsStrategy()))
+			g.add(ActNorm())
+			g.add(Conv3DCirc()) 
+			g.add(AdditiveCouplingReLU(part=1, sign=-1))
 
-				g.add(Conv3DCirc()) 
-				g.add(AdditiveCouplingReLU(part=j%2, sign=-1, strategy=SplitChannelsStrategy()))
 
-				#ac = AffineCoupling(part=j%2, strategy=SplitChannelsStrategy())
-				#ac.add( keras.layers.ReLU() ) # needs to be larger; maybe use additive here? 
-				#g.add(ac) 
-			
-			#g.add(Squeeze())
-			#c = c * 4
-
-			#g.add(MultiScale()) # adds directly to output. For simplicity just add half of channels. 
-			#d = d//2
-
-		g.add(Conv3DCirc()) 
-
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
-
+		g.compile()
 		g.init(X[:1000])
 
 		if verbose: 
@@ -388,7 +366,7 @@ class FlowPP():  # flow++ ;; - attention and logit coupling layers.
 
 		g.compile(optimizer=keras.optimizers.Adam(0.001))
 
-		g.init_actnorm(X[:1000) # how much does this change loss? 
+		g.init_actnorm(X[:1000]) # how much does this change loss? 
 
 		if verbose: 
 			for layer in g.layers: 

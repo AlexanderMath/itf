@@ -23,11 +23,11 @@ class Normal(Latent):
 	"""
 
 	def __init__(self, std=1): 
-		self.std 	= std
+		self.std 	= tf.dtypes.cast(std, dtype=tf.float32)
 		self.latent = None
 
 	def log_density(self, X): 
-		return tf.math.reduce_sum( -1/2 * (X**2/self.std**2 + tf.math.log(2*np.pi*self.std**2)) )
+		return tf.math.reduce_sum( -1/2 * (X**2/self.std**2 + tf.dtypes.cast(tf.math.log(2*np.pi*self.std**2), dtype=tf.float32)) )
 
 	def sample(self, shape, fix_latent=False, std=None): 
 		if std is None: std = self.std

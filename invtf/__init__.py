@@ -21,6 +21,8 @@ import tensorflow.keras as keras
 import numpy as np
 import matplotlib.pyplot as plt 
 
+import time
+
 print("TF Version: \t", tf.__version__)
 print("Eager: \t\t", tf.executing_eagerly())
 print("InvTF Version: \t", __version__)
@@ -277,24 +279,28 @@ class Generator(keras.Model):
 
 		if "loss" in kwargs.keys(): raise Exception("Currently only supports training with maximum likelihood. Please leave loss unspecified, e.g. 'model.compile()'. ")
 
-		# In the case of Multi-Scale architecture, there will be multiple outputs. 
-		# The computations inside the loss function assumes there is just a one output. 
-		# This is handled by flattening, combining and finally reshaping the outputs 
-		# into one single output. In the simple case the shape of the final output is 
-		# that of the input; a more complicated case happens when the model has Discrete 
-		# Bijections, in this case, it reshapes to the output shape of the last Discrete Bijection. 
-		# For now it is assumed NaturalBijection is the only Discrete Bijection. TODO: refactor with abstract class. 
-		self.outputs = [tf.reshape(output, (tf.shape(output)[0], np.prod(output.shape[1:]))) for output in self.outputs]
-		self.outputs = tf.concat(self.outputs, axis=-1) # concatenated. 
+		if len(self.outputs) > 1: 
+			# In the case of Multi-Scale architecture, there will be multiple outputs. 
+			# The computations inside the loss function assumes there is just a one output. 
+			# This is handled by flattening, combining and finally reshaping the outputs 
+			# into one single output. In the simple case the shape of the final output is 
+			# that of the input; a more complicated case happens when the model has Discrete 
+			# Bijections, in this case, it reshapes to the output shape of the last Discrete Bijection. 
+			# For now it is assumed NaturalBijection is the only Discrete Bijection. TODO: refactor with abstract class. 
+			self.outputs = [tf.reshape(output, (tf.shape(output)[0], np.prod(output.shape[1:]))) for output in self.outputs]
 
-		# In the end reshape to fit input last discrete bijection. If none fit input shape
-		h, w, c = self.input_shape[1:]
-		for layer in self.layers: 
-			if isinstance(layer, invtf.discrete_bijections.NaturalBijection): 
-				h, w, c = layer.output_shape[1:]
+			# concatenated. Yields duplicate name error if name is not unique. Time is hack, not sure how to
+			# get graph in tf2.0 and figure out how many there is to make a unique numbering. 
+			self.outputs = tf.concat(self.outputs, axis=-1, name="concat_"+ str(time.time()))
 
-		self.outputs 		= [tf.reshape(self.outputs, (tf.shape(self.outputs)[0], h, w, c))] 
-		self.output_names 	= [self.output_names[-1]] 
+			# In the end reshape to fit input last discrete bijection. If none fit input shape
+			h, w, c = self.input_shape[1:]
+			for layer in self.layers: 
+				if isinstance(layer, invtf.discrete_bijections.NaturalBijection): 
+					h, w, c = layer.output_shape[1:]
+
+			self.outputs 		= [tf.reshape(self.outputs, (tf.shape(self.outputs)[0], h, w, c))] 
+			self.output_names 	= [self.output_names[-1]] 
 
 		kwargs['optimizer'] = optimizer
 		kwargs['loss'] 		= self.loss 
@@ -321,7 +327,7 @@ class Generator(keras.Model):
 
 		"""
 		d			= tf.cast(tf.reduce_prod(y_pred.shape[1:]), tf.float32)
-		norm		= d * np.log(2.) 
+		norm		= d * np.log(2.).astype(np.float32) 
 
 		# Divide by /d to get per dimension. 
 		# Divide by log(2) to go from log base E (default in tensorflow) to log base 2. 
@@ -354,7 +360,7 @@ class Generator(keras.Model):
 		"""
 
 		d			= tf.cast(tf.reduce_prod(y_pred.shape[1:]), 		tf.float32)
-		norm		= d * np.log(2.) 
+		norm		= d * np.log(2.).astype(np.float32) 
 
 		# Divide by /d to get per dimension. 
 		# Divide by log(2) to go from log base E (default in tensorflow) to log base 2. 
@@ -392,7 +398,7 @@ class Generator(keras.Model):
 				break
 
 		d			= tf.cast(tf.reduce_prod(y_pred.shape[1:]), 		tf.float32)
-		norm		= d * np.log(2.) 
+		norm		= d * np.log(2.).astype(np.float32) 
 		vardeqloss 	= vardeqloss / norm
 		return - vardeqloss
 
@@ -609,15 +615,18 @@ class Generator(keras.Model):
 
 
 		# Initialize Normalization. 
+		has_normalize_layer = False
 		for i, layer in enumerate(self.layers): 
-			if isinstance(layer, invtf.layers.Normalize): break
+			if isinstance(layer, invtf.layers.Normalize): 
+				has_normalize_layer = True
+				break
 			X = layer.call(X)
 		
 		max = np.max(X.numpy()) 
 		layer.scale = 1 / (max / 2)
 		X = layer.call(X).numpy()
 
-		assert np.allclose(X.min(), 0, X.max(), 1)
+		if has_normalize_layer: assert np.allclose(X.min(), 0, X.max(), 1)
 
 		# Initialize ActNorm layers (done on CPU). 
 		for layer in self.layers[i:]:
