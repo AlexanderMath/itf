@@ -198,7 +198,6 @@ class Generator(keras.Model):
 
 
 
-
 	def loss(self, y_true, y_pred):	 
 		"""
 			Computes negative log likelihood in bits per dimension. If the model uses Variational 
@@ -208,7 +207,7 @@ class Generator(keras.Model):
 
 				y_true:			Dummy variable. It is required by Keras API, see [2], but the 
 								likelihood computations does not use it.
-				y_pred:			The encoding of the model as a single NumPy array, *NOT* (X, Zs). 
+				y_pred:			Output of last layer (encoding of model). 
 
 			Returns:		
 				The negative log likelihood of the model on data X such that encodings y_pred 
@@ -236,9 +235,32 @@ class Generator(keras.Model):
 		"""
 			Compiles the model to minimize negative log likelihood.  The different terms of the loss 
 			function is added as metric, this is often useful information during training. 
+
+			Comments:
+				The multi-scale layer splits input into two outputs, one is passed on as for 
+				subsequent forward pass, the other part is passed directly to output. Currently,
+				this is done by using a list. The first element is used for subsequent computation
+				and all other elements must later be added together to form output. This happens
+				at the self.outputs = [tf.concat(..)] line. 
+
 		"""
 
 		if "loss" in kwargs.keys(): raise Exception("Currently only supports training with maximum likelihood. Please leave loss unspecified, e.g. 'model.compile()'. ")
+
+		# Add a last layer that combines all intermediate outputs together in a last layer. 
+		# Flatten all outputs, combine, then reshape to input size (handle discrete bijection 
+		# which makes size smaller). 
+		self.outputs = [tf.reshape(output, (tf.shape(output)[0], np.prod(output.shape[1:]))) for output in self.outputs]
+		self.outputs = tf.concat(self.outputs, axis=-1) # concatenated. 
+
+		# In the end reshape to fit input last discrete bijection. If none fit input shape
+		h, w, c = self.input_shape[1:]
+		for layer in self.layers: 
+			if isinstance(layer, invtf.discrete_bijections.NaturalBijection): 
+				h, w, c = layer.output_shape[1:]
+
+		self.outputs = [tf.reshape(self.outputs, (tf.shape(self.outputs)[0], h, w, c))] 
+
 
 		kwargs['optimizer'] = optimizer
 		kwargs['loss'] 		= self.loss 
@@ -248,7 +270,7 @@ class Generator(keras.Model):
 		def lg_perfect(y_true, y_pred): return self.loss_log_latent_density(y_true, self.latent.sample(shape=tf.shape(y_pred))) 
 		def lg_vardeqloss(y_true, y_pred): return self.loss_log_var_dequant(y_true, y_pred)
 
-		kwargs['metrics'] = [lg_det, lg_latent, lg_perfect, lg_vardeqloss]
+		kwargs['metrics'] = []#lg_det, lg_latent, lg_perfect, lg_vardeqloss]
 
 		super(Generator, self).compile(**kwargs)
 
@@ -440,7 +462,7 @@ class Generator(keras.Model):
 				self.inputs = layer_utils.get_source_inputs(self.outputs[0])
 
 		elif self.outputs:
-			# If the model is being built continuously on top of an input layer:
+			"""# If the model is being built continuously on top of an input layer:
 			# refresh its output.
 			output_tensor = layer(self.outputs[0])
 	
@@ -450,7 +472,23 @@ class Generator(keras.Model):
 			if len(nest.flatten(output_tensor)) != 1:
 				raise TypeError('All layers of Invertible Gnerator (Besides MultiScale) '
 												'should have a single output tensor. ')
-			self.outputs = [output_tensor]
+			self.outputs = [output_tensor]"""
+
+			# If the model is being built continuously on top of an input layer:
+			# refresh its output.
+			output_tensor = layer(self.outputs[0])
+
+			# MAIN MODIFICATION.
+			Zs = []
+			if isinstance(layer, invtf.layers.MultiScale): 
+				Zs = [output_tensor[1]]
+				output_tensor = output_tensor[0]
+
+			if len(nest.flatten(output_tensor)) != 1:
+				raise TypeError('All layers of Invertible Generator (Besides MultiScale) '
+												'should have a single output tensor. ')
+			self.outputs = [output_tensor] + self.outputs[1:] + Zs
+
 
 		if self.outputs:
 			# True if set_inputs or self._is_graph_network or if adding a layer
@@ -551,7 +589,7 @@ class Generator(keras.Model):
 		for layer in self.layers[i:]:
 
 			if isinstance(layer, invtf.layers.ActNorm):	# do normalization
-				X = X.numpy()
+				if isinstance(X, tf.Tensor): X = X.numpy()
 				# normalize channel-wise to mean=0 and var=1. 
 				n, h, w, c = X.shape
 				for i in range(c):	# go through each channel. 
@@ -564,7 +602,7 @@ class Generator(keras.Model):
 
 					std	= np.std(X[:, :, :, i])
 					mean = np.mean(X[:, :, :, i])
-					assert np.allclose(std, 1) and np.allclose(mean, 0, atol=10**(-4)), (mean, std)
+					assert np.allclose(std, 1) and np.allclose(mean, 0, atol=10**(-2)), (mean, std)
 
 			X = layer.call(X)
 
@@ -682,10 +720,8 @@ class Generator(keras.Model):
 
 		X = X.reshape((X.shape[0], -1))
 		Zs = [Z.reshape((Z.shape[0], -1)) for Z in Zs]
-		print(X.shape, [Z.shape for Z in Zs])
 
 		out = np.concatenate([X] + Zs, axis=-1)
-		print(out.shape)
 		return out 
 
 		
