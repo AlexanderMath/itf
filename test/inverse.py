@@ -40,38 +40,34 @@ class TestInverse(unittest.TestCase):
 
 		self.assertTrue(A)
 		
-		print("\t", X.reshape(X.size)[entry], rec.reshape(rec.size)[entry], end="")
+		#print("\t", X.reshape(X.size)[entry], rec.reshape(rec.size)[entry], end="")
 
 	def test_actnorm_init(self): 
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.ActNorm()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
-		g.predict(X[:1])
+		g = invtf.Generator() 
+		g.add(invtf.layers.ActNorm(input_shape=X.shape[1:])) 
+		g.compile()
+
+		g.init(X[:1]) # fails due to input initialization? 
+
 		self.assertInverse(g, X)
 
 	def test_actnorm_fit(self):
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.ActNorm()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
-		g.predict(X[:1])
+		g = invtf.Generator() 
+		g.add(invtf.layers.ActNorm(input_shape=X.shape[1:])) 
+		g.compile()
+		g.init(X[:1])
 		g.fit(X[:1], verbose=False) 
 		self.assertInverse(g, X)
 
 
 	def test_natural_bijection(self): 
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.layers.Squeeze()) 
+		g = invtf.Generator() 
+		g.add(invtf.layers.Squeeze(input_shape=X.shape[1:])) 
 		g.add(invtf.discrete_bijections.NaturalBijection()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g.compile()
 		enc = g.predict(X[:1])[0]
 
 		self.assertInverse(g, X)
@@ -79,56 +75,48 @@ class TestInverse(unittest.TestCase):
 	def test_natural_bijection_twice(self): 
 		X = TestInverse.X  # this is 8 bit, convert to 5 bit by divide by 2**3
 		X = X // 2**3
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.layers.Squeeze()) 
+		g = invtf.Generator() 
+		g.add(invtf.layers.Squeeze(input_shape=X.shape[1:])) 
 		g.add(invtf.discrete_bijections.NaturalBijection()) 
 		g.add(invtf.discrete_bijections.NaturalBijection()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g.compile()
 		enc = g.predict(X[:1])[0]
 		self.assertInverse(g, X)
 
-	def test_natural_bijection_twice_with_bit_layer(self): 
+	"""def test_natural_bijection_twice_with_bit_layer(self): 
 		X = TestInverse.X  # this is 8 bit, convert to 5 bit by divide by 2**3
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.layers.Squeeze()) 
+		g = invtf.Generator() 
+		g.add(invtf.layers.Squeeze(input_shape=X.shape[1:])) 
 		g.add(invtf.layers.ReduceNumBits(bits=5))
 		g.add(invtf.discrete_bijections.NaturalBijection()) 
 		g.add(invtf.discrete_bijections.NaturalBijection()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g.compile()
 		enc = g.predict(X[:1])[0]
 
 		rec = g.rec(X)
 		A = np.allclose(rec, X//2**3, atol=1, rtol=0.1) # assumes data is in bytes. 
 
-		self.assertTrue(A)
+		self.assertTrue(A)"""
 
 
 	def test_additive_relu(self): 
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.Squeeze())
+		g = invtf.Generator() 
+		g.add(invtf.layers.Squeeze(input_shape=X.shape[1:]))
 		# they add / subtract on the same part of input and thus cancel each other out. 
 		g.add(invtf.layers.AdditiveCouplingReLU(part=0, sign=+1, strategy=invtf.coupling_strategy.SplitChannelsStrategy())) 
 		g.add(invtf.layers.AdditiveCouplingReLU(part=0, sign=-1, strategy=invtf.coupling_strategy.SplitChannelsStrategy())) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g.compile()
 		enc = g.predict(X[:1])[0]
 		self.assertInverse(g, X)
 
 	def test_additive_relu_part1(self): 
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.Squeeze())
+		g = invtf.Generator() 
+		g.add(invtf.layers.Squeeze(input_shape=X.shape[1:]))
 		g.add(invtf.layers.AdditiveCouplingReLU(part=1, sign=+1, strategy=invtf.coupling_strategy.SplitChannelsStrategy())) 
 		g.add(invtf.layers.AdditiveCouplingReLU(part=1, sign=-1, strategy=invtf.coupling_strategy.SplitChannelsStrategy())) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g.compile()
 		enc = g.predict(X[:1])[0]
 		self.assertInverse(g, X)
 
@@ -144,7 +132,7 @@ class TestInverse(unittest.TestCase):
 		g.add(invtf.layers.Conv3DCirc())
 		g.add(invtf.layers.AdditiveCouplingReLU(part=0, sign=-1, strategy=invtf.coupling_strategy.SplitChannelsStrategy()))
 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g.compile()
 		enc = g.predict(X[:1])[0]
 		self.assertInverse(g, X)"""
 
@@ -154,42 +142,34 @@ class TestInverse(unittest.TestCase):
 
 	def test_3dconv_init(self): 
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.Conv3DCirc()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g = invtf.Generator() 
+		g.add(invtf.layers.Conv3DCirc(input_shape=X.shape[1:])) 
+		g.compile()
 		g.predict(X[:1])
 		self.assertInverse(g, X)
 
 	def test_3dconv_fit(self): 
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.Conv3DCirc()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g = invtf.Generator() 
+		g.add(invtf.layers.Conv3DCirc(input_shape=X.shape[1:])) 
+		g.compile()
 		g.fit(X[:1], epochs=1, verbose=False) 
 		self.assertInverse(g, X)
 
 
 	def test_invconv_init(self):  
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.Inv1x1Conv()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g = invtf.Generator() 
+		g.add(invtf.layers.Inv1x1Conv(input_shape=X.shape[1:])) 
+		g.compile()
 		g.predict(X[:1])
 		self.assertInverse(g, X)
 
 	def test_invconv_fit(self):  
 		X = TestInverse.X 
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.Inv1x1Conv()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g = invtf.Generator() 
+		g.add(invtf.layers.Inv1x1Conv(input_shape=X.shape[1:])) 
+		g.compile()
 		g.predict(X[:1])
 		g.fit(X[:1], epochs=1, verbose=False)
 		self.assertInverse(g, X)
