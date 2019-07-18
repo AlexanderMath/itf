@@ -55,13 +55,12 @@ class Generator(keras.Model):
 
 			> for _ in range(10): 
 			> 	g.add(invtf.layers.ActNorm())
-			> 	g.add(invtf.layers.Inv1x1Conv()) 
 			> 	g.add(invtf.layers.Conv3DCirc())
 			> 	g.add(invtf.layers.AdditiveCouplingReLU()) 
 			>    
 			>	# If the line below is uncommented, the architecture
 			>	# becomes a multi-scale architecture similar to [1,2].
-			>	# if i == 2 or i == 5 or i == 7: g.add(invtf.layers.MultiScale())
+			>	# if i == 5: g.add(invtf.layers.MultiScale())
 
 			> # Prepare model for training and print summary. 
 			> g.compile()		# handles maximum likelihood computations. 
@@ -187,6 +186,7 @@ class Generator(keras.Model):
 		n = X.shape[0]
 
 		for layer in self.layers[::-1]: 
+			if isinstance(layer, keras.layers.InputLayer): continue
 
 			if isinstance(layer, invtf.layers.MultiScale): 
 				X = layer.call_inv(X, Zs.pop())
@@ -206,9 +206,9 @@ class Generator(keras.Model):
 
 			Arguments: 
 
-				y_true:			Dummy variable. It is required by Keras API, see [2]. 
-								but the likelihood computations does not use it.
-				y_pred:			The encoding of the model as a single numpy array, *NOT* (X, Zs). 
+				y_true:			Dummy variable. It is required by Keras API, see [2], but the 
+								likelihood computations does not use it.
+				y_pred:			The encoding of the model as a single NumPy array, *NOT* (X, Zs). 
 
 			Returns:		
 				The negative log likelihood of the model on data X such that encodings y_pred 
@@ -218,9 +218,10 @@ class Generator(keras.Model):
 			Comments: 
 
 				It often useful to inspect the different components of the loss function, for example,
-				how big is the jacobian term compared to the latent density term. To ensure these
-				are normalized with the output of this function, the final loss, the normalization
-				(computing as bit per dimensions) happens inside each of these functions separately. 
+				how big is the jacobian term compared to the latent density term. To facilitate this,
+				each loss term is computed by another function which by default is printed during 
+				training. To make sure the different terms are comparable normalization is handled
+				inside each function. 
 
 			
 			[1] Flow++: Improving Flow-Based Generative Models with 			https://arxiv.org/pdf/1902.00275
@@ -233,12 +234,11 @@ class Generator(keras.Model):
 
 	def compile(self, optimizer=keras.optimizers.Adam(0.001), **kwargs):	
 		"""
-			Compiles the model to minimize negative log likelihood. 
-			The different terms of the loss function is added as metric, 
-			this is often useful information during training. 
+			Compiles the model to minimize negative log likelihood.  The different terms of the loss 
+			function is added as metric, this is often useful information during training. 
 		"""
 
-		if "loss" in kwargs.keys(): raise Exception("Currently only supports training with maximum likelihood. Please leave loss unspecified. ")
+		if "loss" in kwargs.keys(): raise Exception("Currently only supports training with maximum likelihood. Please leave loss unspecified, e.g. 'model.compile()'. ")
 
 		kwargs['optimizer'] = optimizer
 		kwargs['loss'] 		= self.loss 
@@ -256,7 +256,12 @@ class Generator(keras.Model):
 	def loss_log_det(self, y_true, y_pred): 
 		"""
 			Computes negative log determinant, the first term of the loss function. 
-			It is normalized to be in bits per dimension.
+			The loss is normalized to be in bits per dimension.
+
+			Arguments:
+				y_true/y_pred: 	Dummy variables. The Keras API requires both arguments 
+								for a function to be a loss/metric, however, the log 
+								determinant does not depend on them. 
 
 		"""
 		d			= tf.cast(tf.reduce_prod(y_pred.shape[1:]), tf.float32)
@@ -272,13 +277,14 @@ class Generator(keras.Model):
 
 	def loss_log_latent_density(self, y_true, y_pred): 
 		"""
-			Computes log density of encoded data in latent space, the second term of the loss function. 
-			It is normalized to be in bits per dimension. 
+			Computes log density of encoded data in latent space, the second term of the 
+			loss function. The loss is normalized to be in bits per dimension, averaged
+			over the number of samples. 
 
 			Arguments: 
 
-				y_true:			Dummy variable. It is required by Keras API. 
-								but the likelihood computations does not use it.
+				y_true:			Dummy variable. It is required by Keras API, but the likelihood 
+								computations does not use it.
 				y_pred:			The encoding of the model as a single numpy array, *NOT* (X, Zs). 
 
 			Returns:		
@@ -305,7 +311,22 @@ class Generator(keras.Model):
 
 	def loss_log_var_dequant(self, y_true, y_pred): 
 		"""
+			Variational Dequantization introduces an additional term to the loss function, 
+			see equation denominator in (12) from [1]. If the model has a variational 
+			dequantization layer, this function computes the dequantization loss, if not,
+			this function returns 0. 
+			
+			Arguments: 
 
+				y_true: 	Dummy variables, required by Keras but not used. 
+				y_pred: 	Dummy variables, required by Keras but not used. 
+
+			Returns:		
+				Variational Dequantization part of loss function if used (returns 0 otherwise). 
+
+			[1] Flow++: Improving Flow-Based Generative Models with 			https://arxiv.org/pdf/1902.00275
+				Variational Dequantization and Architecture Design
+			
 		"""
 		
 		vardeqloss = 0
@@ -323,6 +344,11 @@ class Generator(keras.Model):
 
 
 	def log_det(self):	
+		"""
+			Computes the log determinant by calling all layers. This is called by
+			'los_log_det' which uses this to compute normalized negative 
+			log determinant.
+		"""
 		logdet = 0.
 
 		for layer in self.layers: 
@@ -337,9 +363,38 @@ class Generator(keras.Model):
 
 	def add(self, layer): 
 		"""
-			.. 
+			Adds a layer following all previous layers. 
 
-			Based loosely on source code of keras.models.Sequential. 
+			Arguments:
+				layer:	A layer that supports call, call_inv and log_det.  
+
+			Example: 
+					
+				> import invtf
+				> import tensorflow.keras as keras
+
+				> # Model
+				> g = invtf.Generator()
+				> g.add(invtf.dequantize.UniformDequantize(input_shape=input_shape)) 
+				> g.add(invtf.layers.Normalize()) 
+				> g.add(invtf.layers.Conv3DCirc()) 
+
+
+			Comments: 
+
+				This code is essentially that of keras.Sequential [1]. As explained 
+				above the class inherits from Model instead of Sequential to allow
+				Multi-Scale architecture with multiple outputs. To simultaneously support
+				the Sequential API we have a modified version of the Sequential 'add(..)'
+				function. 
+		
+				The main modification is that the function below allow multiple outputs 
+				of MultiScale layers which keras.Sequential does not. 
+
+
+			TODO:
+				(1) Make InvLayer class everyone inherits from with O(1) mem backprop. 
+
 		"""
 
 		if len(self._layers) == 0:
@@ -352,35 +407,17 @@ class Generator(keras.Model):
 		if not isinstance(layer, 	keras.layers.Layer): 
 			raise TypeError("The added layer must be an instance of class Layer. Found: " + str(layer))
 
-
 		self.built = False
 		set_inputs = False
 
-
-		from tensorflow.python.keras import layers as layer_module
-		from tensorflow.python.keras.engine import base_layer
-		from tensorflow.python.keras.engine import base_layer_utils
 		from tensorflow.python.keras.engine import input_layer
-		from tensorflow.python.keras.engine import training
 		from tensorflow.python.keras.engine import training_utils
 		from tensorflow.python.keras.utils import layer_utils
-		from tensorflow.python.keras.utils import tf_utils
-		from tensorflow.python.platform import tf_logging as logging
-		from tensorflow.python.training.tracking import base as trackable
 		from tensorflow.python.util import nest
 		from tensorflow.python.util import tf_inspect
-		from tensorflow.python.util.tf_export import keras_export
 
-
-
-		if not self._layers:	 # if list is empty. 
-			#shape 	= layer._batch_input_shape 
-			#x 		= keras.layers.InputLayer(input_shape=shape)
-			#self._layers.append(x)
-
-			#layer(x)
-			#self._layers.append(layer) 
-
+		# If list is empty. 
+		if not self._layers:	 
 			batch_shape, dtype = training_utils.get_input_shape_and_dtype(layer)
 			if batch_shape:
 					# Instantiate an input layer.
@@ -395,10 +432,8 @@ class Generator(keras.Model):
 			if set_inputs:
 				# If an input layer (placeholder) is available.
 				if len(nest.flatten(layer._inbound_nodes[-1].output_tensors)) != 1:
-					raise ValueError('All layers in a Sequential model '
-													 'should have a single output tensor. '
-													 'For multi-output layers, '
-													 'use the functional API.')
+					raise ValueError('All layers of Invertible Generator (besides MultiScale) '
+													 'should have a single output tensor. ' )
 				self.outputs = [
 						nest.flatten(layer._inbound_nodes[-1].output_tensors)[0]
 				]
@@ -413,10 +448,8 @@ class Generator(keras.Model):
 			if isinstance(layer, invtf.layers.MultiScale): output_tensor = output_tensor[0]
 
 			if len(nest.flatten(output_tensor)) != 1:
-				raise TypeError('All layers in a Sequential model '
-												'should have a single output tensor. '
-												'For multi-output layers, '
-												'use the functional API.')
+				raise TypeError('All layers of Invertible Gnerator (Besides MultiScale) '
+												'should have a single output tensor. ')
 			self.outputs = [output_tensor]
 
 		if self.outputs:
@@ -434,74 +467,34 @@ class Generator(keras.Model):
 		self._layer_call_argspecs[layer] = tf_inspect.getfullargspec(layer.call)
 
 
-
-
-	def fit(self, X, **kwargs): 
-		"""
-
-			TODO:
-				maybe remove the dummy X somehow?
-		"""
-		return super(Generator, self).fit(X, y=X, **kwargs)	# if user specifies batch_size here, get upset. 
-
-	def rec(self, X): 
-		X, Zs 	= self.predict(X, dequantize=False) # TODO: deactivate dequantize. 
-		rec 	= self.predict_inv(X, Zs)
-		return rec
-
-	def check_inv(self, X, precision=10**(-5)): 
-		img_shape = X.shape[1:]
-
-		rec = self.rec(X)
-
-		if not np.allclose(X, rec, atol=precision):
-			fig, ax = plt.subplots(5, 3)
-			for i in range(5): 
-				ax[i, 0].imshow(X[i].reshape(img_shape).astype(np.int32))
-				ax[i, 0].set_title("Image")
-				ax[i, 1].imshow(rec[i].reshape(img_shape))
-				ax[i, 1].set_title("Reconstruction")
-				ax[i, 2].imshow((X[i]-rec[i]).reshape(img_shape))
-				ax[i, 2].set_title("Difference")
-				plt.show()
-
-
-	def inspect_log_det(self):	# integrate this with tensorboard. 
-		logdet = 0.
-
-		self.ratio = {}
-		self.ratio_ = {}
-
-		norm = 32*32*3 * np.log(2)
-
-		for layer in self.layers: 
-			val 		= - layer.log_det() / norm
-			logdet 		+= val
-
-			key 		= str(type(layer))
-			if not key in self.ratio.keys(): self.ratio[key] = 0
-			self.ratio[key] += val
-
-		for key in self.ratio.keys():
-			self.ratio_[key] = self.ratio[key] / logdet
-
-		#for key in self.ratio.keys():
-		#	print(self.ratio_[key], "\t", self.ratio[key], "\t", key)
-
-
-
-
 	def sample(self, n=1000, fix_latent=True, std=1.0):	
-		#Z 	= self.latent.sample(n=n, fix_latent=fix_latent)
-		
-		# Figure out how to handle shape of Z. If no multi-scale arch we want to do reshape below. 
-		# If multi-scale arch we don't want to, predict_inv handles it. Figure out who has the responsibility. 
+		"""
+			Generates fake samples. 
 
+			Arguments: 
+				n:				Number of samples (integer)
+				fix_latent: 	Generate samples for fixed randomness. If done during  training
+								this will allow one to see how a single sample changes during 
+								training. 
+				std:			The standard deviation of the latent space distribution. Many
+								state-of-the-art models [1,2] found sampling at lower variance allows
+								yield better looking pictures (but less varied). 
+			Returns:
+				A number 'n' fake generated samples as a NumPy array. 
+
+			Comments:
+				
+			
+
+			[1] Glow: Generative Flow with Invertible 1x1 Convolutions				https://arxiv.org/abs/1807.03039
+			[2] Large Scale GAN Training for High Fidelity Natural Image Synthesis 	https://arxiv.org/abs/1809.11096
+		"""
 		output_shape 	= self.layers[-1].output_shape[1:]
 
 		X = self.latent.sample(shape=(n, ) + output_shape, std=std)
 
 		for layer in self.layers[::-1]: 
+			if isinstance(layer, keras.layers.InputLayer): continue
 
 			if isinstance(layer, invtf.layers.MultiScale): 
 				Z = self.latent.sample(shape=X.shape)
@@ -509,41 +502,41 @@ class Generator(keras.Model):
 			else: 
 				X = layer.call_inv(X)
 
-		return np.array(X, dtype=np.int32) # makes it easier on matplotlib. 
+		return np.array(X) 
 
-		return fakes
+	def interpolate(self, a, b): 	raise NotImplementedError() 
 
-
-
-	def check_init(self, X):	# somethign fishy is going on here. 
-		fig, ax = plt.subplots(3, 1)
-		img_shape = X.shape[1:]
-		fig.canvas.manager.window.wm_geometry("+2500+0")
-
-		fake = self.sample(1, fix_latent=True)
-
-		ax[0].imshow(fake.reshape(img_shape)/255)
-		ax[0].set_title("Fake")
-
-		ax[1].imshow(X[0].reshape(img_shape)/255)
-		ax[1].set_title("Real")
-
-		ax[2].imshow(self.rec(X[:1]).reshape(img_shape)/255)
-		ax[2].set_title("Reconstruction")
-		plt.tight_layout()
 
 	def init(self, X):	 # TODO: consider changing this to build and call super(..).build(..) in end?
 		"""
-			Initial prediction handles some internal keras initialization. 
+			Initializes ActNorm data dependently so output have zero mean and unit 
+			variance (channel-wise). Initializes Normalization so activations  have 
+			zero mean and unit variance. 
 
-			After this we add extra initialization which computes normalization
-			and data dependent actnorm initialization. These computations are 
-			handled in numpy, doing it in tf with GPU would speed up. 
+			Arguments:
+				X:		Input data, typically a NumPy array. Recommend using around
+						a thousand (1000) examples. 
+
+			Comments:
+
+				(1) The code assumes that Normalization happens only once, and it happens
+				before any ActNorm layers. 
 			
-			It could also be interleaved with the initial prediction. 
-		"""
-		self.predict(X)
+				(2) It would be nice to experimentally investigate the importance of 
+				how much data is used to data dependently initialize ActNorm. I believe
+				the original Glow code used 250 examples or so. It would be interesting
+				to see how big an effect the number of examples has on generative performance.
 
+				(3) For ease of implementation, the ActNorm layers are initialized with
+				NumPy on the CPU. Amongst other things, this allow easily writing assertions
+				that check the normalization. Implementing this on GPU will speed things,
+				however, it seems that this initialization step takes milliseconds for
+				rather even big models, so time consumption seems to be negligible. 
+
+		"""
+
+
+		# Initialize Normalization. 
 		for i, layer in enumerate(self.layers): 
 			if isinstance(layer, invtf.layers.Normalize): break
 			X = layer.call(X)
@@ -554,8 +547,7 @@ class Generator(keras.Model):
 
 		assert np.allclose(X.min(), 0, X.max(), 1)
 
-		# Also compute values of actnorm layers, do on cpu. 
-
+		# Initialize ActNorm layers (done on CPU). 
 		for layer in self.layers[i:]:
 
 			if isinstance(layer, invtf.layers.ActNorm):	# do normalization
@@ -577,4 +569,161 @@ class Generator(keras.Model):
 			X = layer.call(X)
 
 			if isinstance(layer, invtf.layers.MultiScale): X = X[0]
+
+	def fit(self, X, **kwargs): 
+		"""
+			Trains the model to maximize the likelihood of the data. 
+			
+			Arguments:
+				X:	Input data, typically in NumPy format. 
+
+			Comments:
+				We are doing unsupervised learning, but the Keras API requires 
+				the fit function of Model [1] to take both examples X and labels y. 
+				To circumvent this we have pass data as labels. 
+
+				TODO: Investigate if this work-around hurt performance. I believe 
+				this just provides the fit function with another pointer to X, which
+				would have a negligible effect on performance.
+
+		"""
+		return super(Generator, self).fit(X, y=X, **kwargs)	
+
+
+
+	"""
+
+		Functions above this point are implement core functionality of training. 
+		Functions below this point are convenience functions. 
+
+	"""
+
+	def rec(self, X): 
+		"""
+			Convenience function. Reconstructs input by first encoding and 
+			then decoding it. This is useful for keeping track of numerical 
+			instability. 
 		
+			Arguments:
+				X:		Input to be reconstructed, typically NumPy array. 
+			
+			Returns: 
+				Reconstructed input. Theoretically it should be true that 
+					np.allclose(X, model.rec(X))
+				Unfortunately, numerical issues typically make this test fail,
+				however, a similar test with lower numerical precision usually 
+				holds: 
+					np.allclose(X, model.rec(X), atol=10**(-5), rtol=10**(-2))
+				See [1] for details. 
+
+
+			[1] NumPY.allclose					https://docs.scipy.org/doc/numpy/reference/generated/numpy.allclose.html
+				
+			TODO: 
+				Make an argument for predict that specifies if predictions are with
+				float32 or float64. Experimentally investigate the size of numerical
+				error when using different precision. 
+
+		"""
+		X, Zs 	= self.predict(X, dequantize=False) 
+		rec 	= self.predict_inv(X, Zs)
+		return rec
+
+	def inspect_log_det(self):	
+		"""
+			Convenience function. Computes how large the contribution of each layer
+			is to the total log determinant. This is useful for debugging the 
+			log determinant computations of each layer. For example, if one layer
+			type accounts for 99% of the entire log-determinant something is 
+			probably wrong. 
+
+		"""
+		logdet = 0.
+
+		self.ratio = {}
+		self.ratio_ = {}
+
+		norm = 32*32*3 * np.log(2)
+
+		for layer in self.layers: 
+			val 		= - layer.log_det() / norm
+			logdet 		+= val
+
+			key 		= str(type(layer))
+			if not key in self.ratio.keys(): self.ratio[key] = 0
+			self.ratio[key] += val
+
+		for key in self.ratio.keys():
+			self.ratio_[key] = self.ratio[key] / logdet
+
+		for key in self.ratio.keys():
+			print(self.ratio_[key], "\t", self.ratio[key], "\t", key)
+
+
+	def encode(self, X):
+		"""
+			Convenience function, similar to predict, but output is a single numpy array
+			with the same size as original input. 
+
+			Arguments: 
+
+				X:				X Input samples, typically Numpy array.  
+
+			Returns:		
+				Numpy array X containing encoding. 
+
+		"""
+		X, Zs = self.predict(X)
+		X = X.numpy()
+
+		if Zs == []: return X
+
+		Zs = [Z.numpy() for Z in Zs]
+
+		X = X.reshape((X.shape[0], -1))
+		Zs = [Z.reshape((Z.shape[0], -1)) for Z in Zs]
+		print(X.shape, [Z.shape for Z in Zs])
+
+		out = np.concatenate([X] + Zs, axis=-1)
+		print(out.shape)
+		return out 
+
+		
+
+
+	def check(self, X): 
+		"""
+			Convenience function. Computes fake, encoding, reconstruction and 
+			plots this next to the real data. This can be used to e.g. check
+			identity initialization, in this case the encoding and the real 
+			image should look alike (also true for reconstruction). 
+			
+			Comments:
+				The images are drawn assuming X is in [0, 255] and that 
+				the normalization divides by 127.5 and substracts 1/2. 
+
+		"""
+	
+		fig, ax = plt.subplots(1, 4)
+		for i in range(4): ax[i].axis("off")
+		img_shape = X.shape[1:]
+		#fig.canvas.manager.window.wm_geometry("+2500+0")
+
+		fake = self.sample(1, fix_latent=True)
+
+		ax[0].imshow(fake.reshape(img_shape)/255)
+		ax[0].set_title("Fake")
+
+		ax[1].imshow(X[0].reshape(img_shape)/255)
+		ax[1].set_title("Real")
+
+		ax[2].imshow(self.rec(X[:1]).reshape(img_shape)/255)
+		ax[2].set_title("Reconstruction")
+
+		ax[3].imshow(self.encode(X[:1]).reshape(img_shape)/2+1/2) 
+		ax[3].set_title("Encoding")
+
+		plt.tight_layout()
+		plt.show()
+
+
