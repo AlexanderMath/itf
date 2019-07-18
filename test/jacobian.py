@@ -10,7 +10,13 @@ import numpy as np
 import warnings
 
 
+"""
+	Some of the computations are happening on the CPU and are, as a result, very slow. 
+"""
+
 class TestJacobian(unittest.TestCase): 
+
+	X = keras.datasets.cifar10.load_data()[0][0][:1].astype(np.float32) # a single cifar image. 
 
 	def assertJacobian(self, g, X): 
 		"""
@@ -25,6 +31,8 @@ class TestJacobian(unittest.TestCase):
 			np.allclose has a quite high absolute tolerance. 
 
 		"""
+		X = tf.constant(X)
+
 		with tf.GradientTape(persistent=True) as t: 
 			t.watch(X)
 			z = g.call(X)
@@ -36,90 +44,77 @@ class TestJacobian(unittest.TestCase):
 		lgdet1 = tf.math.log(tf.linalg.det(J)).numpy()
 		lgdet2 = g.log_det().numpy()
 
-		print(lgdet1, lgdet2)
+		#print(lgdet1, lgdet2)
 		
 		# If the following equation is element-wise True, then allclose returns True.
 		# 		absolute(a - b) <= (atol + rtol * absolute(b))
 		# See https://docs.scipy.org/doc/numpy/reference/generated/numpy.allclose.html
-		A = np.allclose( lgdet1, lgdet2 , atol=10**(-4), rtol=0.1)  # deciding these values are very difficult for all tests.. 
+		A = np.allclose( lgdet1, lgdet2 , atol=10**(-3), rtol=0.15)  # deciding these values are very difficult for all tests.. 
 
 		self.assertTrue(A)
 		#print("\t", lgdet1, lgdet2, "\t", end="")
 		
 
 	def test_actnorm_init(self): 
-		X = tf.random.normal((1, 32, 32, 3), 0, 1)
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.ActNorm()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
-		g.predict(X[:1])
+		X = TestJacobian.X
+		g = invtf.Generator() 
+		g.add(invtf.layers.ActNorm(input_shape=X.shape[1:])) 
+		g.compile()
+		g.init(X[:100])
 		self.assertJacobian(g, X)
 
 	def test_actnorm_fit(self): 
-		X = tf.random.normal((1, 32, 32, 3), 0, 1)
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.ActNorm()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
-		g.predict(X[:1])
+		X = TestJacobian.X
+		g = invtf.Generator() 
+		g.add(invtf.layers.ActNorm(input_shape=X.shape[1:])) 
+		g.compile()
+		g.init(X[:100])
 		g.fit(X[:1], verbose=False)
 		self.assertJacobian(g, X)
 
 
 	def test_invconv_init(self): 
-		X = tf.random.normal((1, 32, 32, 3), 0, 1)
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.Inv1x1Conv()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
-		g.predict(X[:1])
+		X = TestJacobian.X
+		g = invtf.Generator() 
+		g.add(invtf.layers.Inv1x1Conv(input_shape=X.shape[1:])) 
+		g.compile()
+		g.init(X[:100])
+
 		self.assertJacobian(g, X)
 
 	def test_invconv_fit(self): 
-		X = tf.random.normal((1, 32, 32, 3), 0, 1)
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
-		g.add(invtf.Inv1x1Conv()) 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
-		g.predict(X[:1])
+		X = TestJacobian.X
+		g = invtf.Generator() 
+		g.add(invtf.layers.Inv1x1Conv(input_shape=X.shape[1:])) 
+		g.compile()
+		g.init(X[:100])
 		g.fit(X[:1], verbose=False)
 		self.assertJacobian(g, X)
 
 	"""def test_glow_init(self): 
 		X = tf.random.normal((1,32,32,3), 0, 1)
-		g = invtf.models.Glow.model(X)
-		self.assertJacobian(g, X)
+		g = invtf.Generator()tJacobian(g, X)
 
 	def test_glow_fit(self): 
 		X = tf.random.normal((1, 32,32,3), 0, 1)
-		g = invtf.models.Glow.model(X)
-		g.fit(X[:1], verbose=False)
+		g = invtf.Generator()], verbose=False)
 		self.assertJacobian(g, X)"""
 
 	# Issue with GradientTape.Jacobian for FFT3D causes two below to break.
 	"""
 	def test_3dconv_init(self): 
 		X = tf.random.normal((1, 32,32,3), 0, 1)
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
+		g = invtf.Generator() 
 		g.add(invtf.Conv3DCirc()) # initialize not like ones so it becomes zero. 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g.compile()
 		g.predict(X[:1])
 		self.assertJacobian(g, X)
 
 	def test_3dconv_fit(self): 
 		X = tf.random.normal((1, 32,32,3), 0, 1)
-		d = 32*32*3
-		g = invtf.Generator(invtf.latent.Normal(d)) 
-		g.add(keras.layers.InputLayer(input_shape=(32,32,3)))
+		g = invtf.Generator() 
 		g.add(invtf.Conv3DCirc()) # initialize not like ones so it becomes zero. 
-		g.compile(optimizer=keras.optimizers.Adam(0.001))
+		g.compile()
 		g.fit(X[:1], verbose=False, epochs=1) 
 		self.assertJacobian(g, X)"""
 
