@@ -5,192 +5,54 @@ from tensorflow.keras.layers import ReLU
 from invtf.override import print_summary
 from invtf.coupling_strategy import *
 
-class ReduceNumBits(keras.layers.Layer): 
-	"""
-		Glow used 5 bit variant of CelebA. 
-		Flow++ had 3 and 5 bit variants of ImageNet. 
-		These lower bit variants allow better dimensionality reduction. 
-		This layer should be the first within the model. 
-
-		This also means subsequent normalization needs to divide by less. 
-		In this sense likelihood is incomparable between different number of bits. 
-
-		It seems to work, but it is a bit instable. 
-	"""
-	def __init__(self, bits=5):  # assumes input has 8 bits. 
-		self.bits = 5
-		super(ReduceNumBits, self).__init__()
-
-	def call(self, X): 
-		X = tf.dtypes.cast(X, dtype=np.float32)
-		return X // ( 2**(8-self.bits) )
-
-	def call_inv(self, Z): 
-		# THIS PART IS NOT INVERTIBLE!!
-		return Z * (2**(8-self.bits))
-
-	def log_det(self): return 0. 
-		
-
-
-class ActNorm(keras.layers.Layer): 
-
-	"""
-		The exp parameter allows the scaling to be exp(s) \odot X. 
-		This cancels out the log in the log_det computations. 
-	"""
-
-	def __init__(self, exp=False, **kwargs): 
-		self.exp = exp
-		super(ActNorm, self).__init__(**kwargs)
-
-	def build(self, input_shape): 
-
-		n, h, w, c = input_shape
-		self.h = h
-		self.w = w
-
-		self.s = self.add_weight(shape=c, 	initializer='ones', name="affine_scale") 
-		self.b = self.add_weight(shape=c, 	initializer='zero', name="affine_bias")
-
-		super(ActNorm, self).build(input_shape)
-		self.built = True
-
-	def call(self, X): 		return X * self.s + self.b
-	def call_inv(self, Z):  return (Z - self.b) / self.s
-
-	def log_det(self): 		return self.h * self.w * tf.reduce_sum(tf.math.log(tf.abs(self.s)))
-
-	def compute_output_shape(self, input_shape): return input_shape
-
-
-
-
-"""
-	The affine coupling layer is described in NICE, REALNVP and GLOW. 
-	The description in Glow use a single network to output scale s and transform t, 
-	it seems the description in REALNVP is a bit more general refering to s and t as 
-	different functions. From this perspective Glow change the affine layer to have
-	weight sharing between s and t. 
-	 Specifying a single function is a lot simpler code-wise, we thus use that approach. 
-
-
-	For now assumes the use of convolutions 
-
-"""
-class AffineCoupling(keras.layers.Layer): # Sequential):  	
-
-	def add(self, layer): self.layers.append(layer)
-
-	unique_id = 1
-
-	def __init__(self, part=0, strategy=SplitChannelsStrategy()): 
-		super(AffineCoupling, self).__init__(name="aff_coupling_%i"%AffineCoupling.unique_id)
-		AffineCoupling.unique_id += 1
-		self.part 		= part 
-		self.strategy 	= strategy
-		self.layers = []
-		self._is_graph_network = False
-		self.precomputed_log_det = 0.
-
-	def _check_trainable_weights_consistency(self): return True
-
-	def build(self, input_shape):
-
-		# handle the issue with each network output something larger. 
-		_, h, w, c = input_shape
-
-
-		h, w, c = self.strategy.coupling_shape(input_shape=(h,w,c))
-
-		self.layers[0].build(input_shape=(None, h, w, c))
-		out_dim = self.layers[0].compute_output_shape(input_shape=(None, h, w, c))
-		self.layers[0].output_shape_ = out_dim
-
-		for layer in self.layers[1:]:  
-			layer.build(input_shape=out_dim)
-			out_dim = layer.compute_output_shape(input_shape=out_dim)
-			layer.output_shape_ = out_dim
-
-
-		super(AffineCoupling, self).build(input_shape)
-		self.built = True
-
-	def call_(self, X): 
-
-		in_shape = tf.shape(X)
-		n, h, w, c = X.shape
-
-		for layer in self.layers: 
-			X = layer.call(X) 
-
-		# TODO: Could have a part of network learned specifically for s,t to not ONLY have wegith sharing? 
-		
-		# Using strategy from 
-		# https://github.com/openai/glow/blob/eaff2177693a5d84a1cf8ae19e8e0441715b82f8/model.py#L376
-		X = tf.reshape(X, (-1, h, w, c*2))
-		s = X[:, :, :, ::2] # add a strategy pattern to decide how the output is split. 
-		t = X[:, :, :, 1::2]  
-		#s = tf.math.sigmoid(s)
-
-		#s = X[:, :, w//2:, :]
-		#t = X[:, :, :w//2, :]  
-
-		s = tf.reshape(s, in_shape)
-		t = tf.reshape(t, in_shape)
-
-		return s, t
-
-	def call(self, X): 		
-
-		x0, x1 = self.strategy.split(X)
-
-		if self.part == 0: 
-			s, t 	= self.call_(x1)
-			x0 		= x0*s + t # glow changed order of this? i.e. translate then scale. 
-
-		if self.part == 1: 
-			s, t 	= self.call_(x0)
-			x1 		= x1*s + t 
-
-		self.precompute_log_det(s, X)
-
-		X 		= self.strategy.combine(x0, x1)
-		return X
-
-	def call_inv(self, Z):	 
-		z0, z1 = self.strategy.split(Z)
-		
-		if self.part == 0: 
-			s, t 	= self.call_(z1)
-			z0 		= (z0 - t)/s
-		if self.part == 1: 
-			s, t 	= self.call_(z0)
-			z1 		= (z1 - t)/s
-
-		Z 		= self.strategy.combine(z0, z1)
-		return Z
-
-	def precompute_log_det(self, s, X): 
-		n 		= tf.dtypes.cast(tf.shape(X)[0], tf.float32)
-		self.precomputed_log_det = tf.reduce_sum(tf.math.log(tf.abs(s))) / n
-
-	def log_det(self): 		  return self.precomputed_log_det
-
-	def compute_output_shape(self, input_shape): return input_shape
-
-	def summary(self, line_length=None, positions=None, print_fn=None):
-		print_summary(self, line_length=line_length, positions=positions, print_fn=print_fn) # fixes stupid issue.
-
-
 
 """
 	Known issue with multi-scale architecture. 
 	The log-det computations normalizes wrt full dimension. 
 
 """
+#TODO Write unit tests
+class LayerWithGrads(keras.layers.Layer):    
+	'''
+	This is a virtual class from which all layer classes need to inherit
+	It has the function `compute gradients` which is used for constant 
+	memory backprop.
+	'''
+	def __init__(self,**kwargs):
+		super(LayerWithGrads,self).__init__(**kwargs)
 
-class Linear(keras.layers.Layer): 
+	def call(self,X):
+		raise NotImplementedError
+
+	def call_inv(self,X):
+		raise NotImplementedError
+
+	def compute_gradients(self,x,dy,regularizer=None,scaling=1):  
+		'''
+		Computes gradients for backward pass
+		Args:
+			x - tensor compatible with forward pass, input to the layer
+			dy - incoming gradient from backprop
+			regularizer - function, indicates dependence of loss on weights of layer
+		Returns
+			dy - gradients wrt input, to be backpropagated
+			grads - gradients wrt weights
+		'''
+		#TODO check if log_det of AffineCouplingLayer depends needs a regularizer.
+		with tf.GradientTape() as tape:
+			tape.watch(x)
+			y_ = self.call(x)   #Required to register the operation onto the gradient tape
+		grads_combined = tape.gradient(y_,[x]+self.trainable_variables,output_gradients=dy)
+		dy,grads = grads_combined[0],grads_combined[1:]
+
+		if regularizer is not None:
+			with tf.GradientTape() as tape:
+				reg = -regularizer()/scaling
+			grads_wrt_reg = tape.gradient(reg, self.trainable_variables)
+			grads = [a[0]+a[1] for a in zip(grads,grads_wrt_reg) if a[1] is not None]
+		return dy,grads
+
+class Linear(LayerWithGrads): 
 
 	def __init__(self, **kwargs): super(Linear, self).__init__(**kwargs)
 
@@ -199,26 +61,26 @@ class Linear(keras.layers.Layer):
 		assert len(input_shape) == 2
 		_, d = input_shape
 
-		self.W = self.add_weight(shape=(d, d), 	initializer='identity', name="linear_weight")
-		self.b = self.add_weight(shape=(d), 	initializer='zero',		name="linear_bias")
+		self.W = self.add_weight(shape=(d, d),  initializer='identity', name="linear_weight")
+		self.b = self.add_weight(shape=(d),     initializer='zero',     name="linear_bias")
 		
 		super(Linear, self).build(input_shape)
 		self.built = True
 
-	def call(self, X): 		return X @ self.W + self.b 
+	def call(self, X):      return X @ self.W + self.b 
 
 	def call_inv(self, Z):  return (Z - self.b) @ tf.linalg.inv(self.W)
 
-	def jacobian(self):		return self.W
+	def jacobian(self):     return self.W
 
-	def log_det(self): 		return tf.math.log(tf.abs(tf.linalg.det(self.jacobian())))
+	def log_det(self):      return tf.math.log(tf.abs(tf.linalg.det(self.jacobian())))
 
 	def compute_output_shape(self, input_shape): 
 		self.output_shape = input_shape
 		return input_shape
 
 
-class Affine(keras.layers.Layer): 
+class Affine(LayerWithGrads): 
 
 	"""
 		The exp parameter allows the scaling to be exp(s) \odot X. 
@@ -234,27 +96,27 @@ class Affine(keras.layers.Layer):
 		#assert len(input_shape) == 2
 		d = input_shape[1:]
 
-		self.w = self.add_weight(shape=d, 	initializer='ones', name="affine_scale") 
-		self.b = self.add_weight(shape=d, 	initializer='zero', name="affine_bias")
+		self.w = self.add_weight(shape=d,   initializer='ones', name="affine_scale") 
+		self.b = self.add_weight(shape=d,   initializer='zero', name="affine_bias")
 
 		super(Affine, self).build(input_shape)
 		self.built = True
 
-	def call(self, X): 		
-		if self.exp: 	return X * tf.exp(self.w) + self.b 
-		else: 			return X * self.w 		  + self.b
+	def call(self, X):      
+		if self.exp:    return X * tf.exp(self.w) + self.b 
+		else:           return X * self.w         + self.b
 
 	def call_inv(self, Z):  
-		if self.exp:	return (Z - self.b) / tf.exp(self.w)
-		else: 			return (Z - self.b) / self.w
+		if self.exp:    return (Z - self.b) / tf.exp(self.w)
+		else:           return (Z - self.b) / self.w
 
-	def jacobian(self):		return self.w
+	def jacobian(self):     return self.w
 
-	def eigenvalues(self): 	return self.w
+	def eigenvalues(self):  return self.w
 
-	def log_det(self): 		
-		if self.exp: 	return tf.reduce_sum(tf.abs(self.eigenvalues()))
-		else: 			return tf.reduce_sum(tf.math.log(tf.abs(self.eigenvalues())))
+	def log_det(self):      
+		if self.exp:    return tf.reduce_sum(tf.abs(self.eigenvalues()))
+		else:           return tf.reduce_sum(tf.math.log(tf.abs(self.eigenvalues())))
 
 	def compute_output_shape(self, input_shape): 
 		self.output_shape = input_shape
@@ -286,12 +148,12 @@ class Inv1x1Conv(keras.layers.Layer):
 
 		# random orthogonal matrix 
 		# check if tf.linalg.qr and tf.linalg.lu are more stable than scipy. 
-		self.kernel 	= self.add_weight(initializer=keras.initializers.Orthogonal(), shape=(c, c), name="inv_1x1_conv_P")
+		self.kernel     = self.add_weight(initializer=keras.initializers.Orthogonal(), shape=(c, c), name="inv_1x1_conv_P")
 	
 		super(Inv1x1Conv, self).build(input_shape)
 		self.built = True
 
-	def call(self, X): 	
+	def call(self, X):  
 		_W = tf.reshape(self.kernel, (1,1, self.c, self.c))
 		return tf.nn.conv2d(X, _W, [1,1,1,1], "SAME")
 
@@ -301,7 +163,7 @@ class Inv1x1Conv(keras.layers.Layer):
 		_W = tf.reshape(self.kernel_inv, (1,1, self.c, self.c))
 		return tf.nn.conv2d(Z, _W, [1,1,1,1], "SAME")
 
-	def log_det(self): 		  # det computations are way too instable here.. 
+	def log_det(self):        # det computations are way too instable here.. 
 		return self.h * self.w * tf.math.log(tf.abs( tf.linalg.det(self.kernel) ))   
 
 	def compute_output_shape(self, input_shape): return input_shape
@@ -309,7 +171,7 @@ class Inv1x1Conv(keras.layers.Layer):
 
 
 
-class Inv1x1ConvPLU(keras.layers.Layer):  
+class Inv1x1ConvPLU(LayerWithGrads):  
 	"""
 		Based on Glow page 11 appendix B. 
 		It is possible to speed up determinant computation by using PLU or QR decomposition
@@ -334,7 +196,7 @@ class Inv1x1ConvPLU(keras.layers.Layer):
 		# random orthogonal matrix 
 		# check if tf.linalg.qr and tf.linalg.lu are more stable than scipy. 
 		import scipy
-		w 		= scipy.linalg.qr(np.random.normal(0, 1, (self.c, self.c)))[0].astype(np.float32)
+		w       = scipy.linalg.qr(np.random.normal(0, 1, (self.c, self.c)))[0].astype(np.float32)
 		P, L, U = scipy.linalg.lu(w)
 
 		def init_P(self, shape=None, dtype=None): return P
@@ -350,7 +212,7 @@ class Inv1x1ConvPLU(keras.layers.Layer):
 
 		L_mask = tf.constant(np.triu(np.ones((c,c)), k=+1), dtype=tf.float32)
 		P_mask = tf.constant(np.tril(np.ones((c,c)), k=-1), dtype=tf.float32)
-		I 	   = tf.constant(np.identity(c), dtype=tf.float32)
+		I      = tf.constant(np.identity(c), dtype=tf.float32)
 
 		self.P = self.P * P_mask + I
 		self.L = self.L * L_mask + I
@@ -361,15 +223,15 @@ class Inv1x1ConvPLU(keras.layers.Layer):
 		self.L_inv = tf.linalg.inv(tf.dtypes.cast(L, dtype=tf.float64))
 		self.U_inv = tf.linalg.inv(tf.dtypes.cast(U, dtype=tf.float64))
 
-		self.kernel_inv 	= tf.linalg.inv(self.kernel) # tf.dtypes.cast(self.U_inv @ self.L_inv @ self.P_inv, dtype=tf.float32)
+		self.kernel_inv     = tf.linalg.inv(self.kernel) # tf.dtypes.cast(self.U_inv @ self.L_inv @ self.P_inv, dtype=tf.float32)
 
-		#self.I_ 			= self.kernel @ tf.linalg.inv(self.kernel)
-		#self.I 				= self.kernel @ self.kernel_inv
+		#self.I_            = self.kernel @ tf.linalg.inv(self.kernel)
+		#self.I                 = self.kernel @ self.kernel_inv
 	
 		super(Inv1x1Conv, self).build(input_shape)
 		self.built = True
 
-	def call(self, X): 	
+	def call(self, X):  
 		_W = tf.reshape(self.kernel, (1,1, self.c, self.c))
 		return tf.nn.conv2d(X, _W, [1,1,1,1], "SAME")
 
@@ -377,7 +239,7 @@ class Inv1x1ConvPLU(keras.layers.Layer):
 		_W = tf.reshape(self.kernel_inv, (1,1, self.c, self.c))
 		return tf.nn.conv2d(Z, _W, [1,1,1,1], "SAME")
 
-	def log_det(self): 		  # det computations are way too instable here.. 
+	def log_det(self):        # det computations are way too instable here.. 
 		return self.h * self.w * tf.math.log(tf.abs( tf.linalg.det(self.kernel) ))   # Looks fine? 
 
 	def compute_output_shape(self, input_shape): return input_shape
@@ -401,7 +263,7 @@ class AdditiveCoupling(keras.Sequential):  # refactor to be layer and to support
 	def __init__(self, part=0, strategy=SplitOnHalfStrategy()): # strategy: alternate / split  ;; alternate does odd/even, split has upper/lower. 
 		super(AdditiveCoupling, self).__init__(name="add_coupling_%i"%AdditiveCoupling.unique_id)
 		AdditiveCoupling.unique_id += 1
-		self.part 	= part 
+		self.part   = part 
 		self.strategy = strategy
 
 
@@ -423,40 +285,66 @@ class AdditiveCoupling(keras.Sequential):  # refactor to be layer and to support
 			X = layer.call(X)
 		return X
 
-	def call(self, X): 		
-		shape 	= tf.shape(X)
-		d 		= tf.reduce_prod(shape[1:])
-		X 		= tf.reshape(X, (shape[0], d))
+	def call(self, X):      
+		shape   = tf.shape(X)
+		d       = tf.reduce_prod(shape[1:])
+		X       = tf.reshape(X, (shape[0], d))
 
 		x0, x1 = self.strategy.split(X)
 
-		if self.part == 0: x0 		= x0 + self.call_(x1)
-		if self.part == 1: x1 		= x1 + self.call_(x0)
+		if self.part == 0: x0       = x0 + self.call_(x1)
+		if self.part == 1: x1       = x1 + self.call_(x0)
 
 		X = self.strategy.combine(x0, x1)
 
-		X 		= tf.reshape(X, shape)
+		X       = tf.reshape(X, shape)
 		return X
 
-	def call_inv(self, Z):	 
-		shape 	= tf.shape(Z)
-		d 		= tf.reduce_prod(shape[1:])
-		Z 		= tf.reshape(Z, (shape[0], d))
+	def call_inv(self, Z):   
+		shape   = tf.shape(Z)
+		d       = tf.reduce_prod(shape[1:])
+		Z       = tf.reshape(Z, (shape[0], d))
 
 		z0, z1 = self.strategy.split(Z)
 		
-		if self.part == 0: z0 		= z0 - self.call_(z1)
-		if self.part == 1: z1 		= z1 - self.call_(z0)
+		if self.part == 0: z0       = z0 - self.call_(z1)
+		if self.part == 1: z1       = z1 - self.call_(z0)
 
 		Z = self.strategy.combine(z0, z1)
 
-		Z 		= tf.reshape(Z, shape)
+		Z       = tf.reshape(Z, shape)
 		return Z
 
 
-	def log_det(self): 		return 0. 
+	def log_det(self):      return 0. 
 
 	def compute_output_shape(self, input_shape): return input_shape
+
+	def compute_gradients(self,x,dy,regularizer=None,scaling=1):  
+		'''
+		Computes gradients for backward pass
+		Since the coupling layers do not inherit from `LayerWithGrads`, this 
+		function is re-written. See TODO of AffineCoupling for further info
+		Args:
+			x - tensor compatible with forward pass, input to the layer
+			dy - incoming gradient from backprop
+			regularizer - function, indicates dependence of loss on weights of layer
+		Returns
+			dy - gradients wrt input, to be backpropagated
+			grads - gradients wrt weights
+		'''
+		with tf.GradientTape() as tape:
+			tape.watch(x)
+			y_ = self.call(x)   #Required to register the operation onto the gradient tape
+		grads_combined = tape.gradient(y_,[x]+self.trainable_variables,output_gradients=dy)
+		dy,grads = grads_combined[0],grads_combined[1:]
+
+		if regularizer is not None:
+			with tf.GradientTape() as tape:
+				reg = -regularizer()
+			grads_wrt_reg = tape.gradient(reg, self.trainable_variables)
+			grads = [a[0]+a[1] for a in zip(grads,grads_wrt_reg)]
+		return dy,grads
 
 
 
@@ -512,7 +400,7 @@ class AdditiveCouplingReLU(keras.layers.Layer):
 		- Downscale images, e.g. alternate pixels and have 4 lower dim images and stack them. 
 		- ... 
 """
-class Squeeze(keras.layers.Layer): 
+class Squeeze(LayerWithGrads): 
 
 	def call(self, X): 
 		n, self.w, self.h, self.c = X.shape
@@ -521,7 +409,7 @@ class Squeeze(keras.layers.Layer):
 	def call_inv(self, X): 
 		return tf.reshape(X, [-1, self.w, self.h, self.c])
 		
-	def log_det(self): return 0. 
+	def log_det(self): return tf.zeros((1,)) 
 
 
 class UnSqueeze(keras.layers.Layer): 
@@ -537,7 +425,7 @@ class UnSqueeze(keras.layers.Layer):
 
 
 
-class Normalize(keras.layers.Layer):  # normalizes data after dequantization. 
+class Normalize(LayerWithGrads):  # normalizes data after dequantization. 
 	"""
 
 	"""
@@ -556,7 +444,7 @@ class Normalize(keras.layers.Layer):  # normalizes data after dequantization.
 		self.built = True
 
 	def call(self, X):  
-		X 			= X * self.scale  - 1
+		X           = X * self.scale  - 1
 		return X
 
 	def call_inv(self, Z): 
@@ -583,15 +471,15 @@ class MultiScale(keras.layers.Layer):
 		n, h, w, c = input_shape
 		return (n, h, w, c//2)
 
-	def log_det(self): return 0.
+	def log_det(self): return tf.zeros((1,))
 
 
 
 
-"""
-	There's an issue with scaling, which intuitively makes step-size VERY small. 
-"""
-class Conv3DCirc(keras.layers.Layer): 
+class Conv3DCirc(LayerWithGrads): 
+	"""
+		There's an issue with scaling, which intuitively makes step-size VERY small. 
+	"""
 
 	def __init__(self,trainable=True): 
 		self.built = False
@@ -669,28 +557,232 @@ class ResidualConv3DCirc(Conv3DCirc):
 		self.built = True
 
 
-class Reshape(keras.layers.Layer):
-	def __init__(self, shape): 
-		self.shape = shape
-		super(Reshape, self).__init__()
+
+class InvResNet(keras.layers.Layer):            pass # model should automatically use gradient checkpointing if this is used. 
+
+
+# the 3D case, refactor to make it into the general case. 
+# make experiment with nD case, maybe put reshape into it? 
+# Theoretically time is the same? 
+class CircularConv(keras.layers.Layer): 
+
+	def __init__(self, dim=3):  # 
+		self.dim = dim 
+
+	def call(self, X):      pass
+	
+	def call_inv(self, X):  pass
+
+	def log_det(self):      pass
+
+
+
+
+
+"""
+	The affine coupling layer is described in NICE, REALNVP and GLOW. 
+	The description in Glow use a single network to output scale s and transform t, 
+	it seems the description in REALNVP is a bit more general refering to s and t as 
+	different functions. From this perspective Glow change the affine layer to have
+	weight sharing between s and t. 
+	 Specifying a single function is a lot simpler code-wise, we thus use that approach. 
+
+
+	For now assumes the use of convolutions 
+
+"""
+class AffineCoupling(LayerWithGrads): # Sequential):    
+
+	def add(self, layer): self.layers.append(layer)
+
+	unique_id = 1
+
+	def __init__(self, part=0, strategy=SplitChannelsStrategy()): 
+		super(AffineCoupling, self).__init__(name="aff_coupling_%i"%AffineCoupling.unique_id)
+		AffineCoupling.unique_id += 1
+		self.part       = part 
+		self.strategy   = strategy
+		self.layers = []
+		self._is_graph_network = False
+
+
+	def _check_trainable_weights_consistency(self): return True
+
+	def build(self, input_shape):
+
+		# handle the issue with each network output something larger. 
+		_, h, w, c = input_shape
+
+
+		h, w, c = self.strategy.coupling_shape(input_shape=(h,w,c))
+
+		self.layers[0].build(input_shape=(None, h, w, c))
+		out_dim = self.layers[0].compute_output_shape(input_shape=(None, h, w, c))
+		self.layers[0].output_shape_ = out_dim
+
+		for layer in self.layers[1:]:  
+			layer.build(input_shape=out_dim)
+			out_dim = layer.compute_output_shape(input_shape=out_dim)
+			layer.output_shape_ = out_dim
+
+
+		super(AffineCoupling, self).build(input_shape)
+		self.built = True
+
+	def call_(self, X): 
+
+		in_shape = tf.shape(X)
+		n, h, w, c = X.shape
+
+		for layer in self.layers: 
+			X = layer.call(X) 
+
+		# TODO: Could have a part of network learned specifically for s,t to not ONLY have wegith sharing? 
+		
+		# Using strategy from 
+		# https://github.com/openai/glow/blob/eaff2177693a5d84a1cf8ae19e8e0441715b82f8/model.py#L376
+		X = tf.reshape(X, (-1, h, w, c*2))
+		s = X[:, :, :, ::2] # add a strategy pattern to decide how the output is split. 
+		t = X[:, :, :, 1::2]  
+		#s = tf.math.sigmoid(s)
+
+		#s = X[:, :, w//2:, :]
+		#t = X[:, :, :w//2, :]  
+
+		s = tf.reshape(s, in_shape)
+		t = tf.reshape(t, in_shape)
+
+		return s, t
+
+	def call(self, X):      
+
+		x0, x1 = self.strategy.split(X)
+
+		if self.part == 0: 
+			s, t    = self.call_(x1)
+			x0      = x0*s + t # glow changed order of this? i.e. translate then scale. 
+
+		if self.part == 1: 
+			s, t    = self.call_(x0)
+			x1      = x1*s + t 
+
+		self.precompute_log_det(s, X)
+		# print("s",np.isnan(s),np.isnan(t))
+		X       = self.strategy.combine(x0, x1)
+		#Diagnostic statements for testing NaN gradient
+		# print("s",np.isnan(s).all(),"t",np.isnan(t).all())
+		# print("X0",np.isnan(x0).all(),"X1",np.isnan(x1).all())
+		return X
+
+	def call_inv(self, Z):   
+		z0, z1 = self.strategy.split(Z)
+		
+		if self.part == 0: 
+			s, t    = self.call_(z1)
+			z0      = (z0 - t)/s
+		if self.part == 1: 
+			s, t    = self.call_(z0)
+			z1      = (z1 - t)/s
+
+		Z       = self.strategy.combine(z0, z1)
+		return Z
+
+	def precompute_log_det(self, s, X): 
+		n       = tf.dtypes.cast(tf.shape(X)[0], tf.float32)
+		self._log_det = tf.reduce_sum(tf.math.log(tf.abs(s))) / n
+
+	def log_det(self):        return self._log_det
+
+	def compute_output_shape(self, input_shape): return input_shape
+
+	def summary(self, line_length=None, positions=None, print_fn=None):
+		print_summary(self, line_length=line_length, positions=positions, print_fn=print_fn) # fixes stupid issue.
+
+	def compute_gradients(self,x,dy,regularizer=None,scaling=1):  
+		'''
+		Computes gradients for backward pass
+		Args:
+			x - tensor compatible with forward pass, input to the layer
+			dy - incoming gradient from backprop
+			regularizer - function, indicates dependence of loss on weights of layer
+		Returns
+			dy - gradients wrt input, to be backpropagated
+			grads - gradients wrt weights
+		'''
+		#TODO check if log_det of AffineCouplingLayer depends needs a regularizer. -- It does
+		#TODO fix bug of incorrect dy
+		with tf.GradientTape(persistent=True) as tape:  #Since log_det is computed within call
+			tape.watch(x)
+			y_ = self.call(x)   #Required to register the operation onto the gradient tape
+			reg = -self._log_det/scaling
+		grads_combined = tape.gradient(y_,[x]+self.trainable_variables,output_gradients=dy)
+		grads_wrt_reg = tape.gradient(reg,self.trainable_variables)
+		grads_of_inp = tape.gradient(reg,[x])
+		dy,grads = grads_combined[0],grads_combined[1:]
+		grads = [a[0]+a[1] for a in zip(grads,grads_wrt_reg)]
+		n       = tf.dtypes.cast(tf.shape(x)[0], tf.float32)
+		dy = [a[1]+a[0] for a in zip(dy,grads_of_inp)]	#TODO check this expression, seems numerically approximate
+		del tape    #Since tape was persistent, we need this
+		return dy,grads
+
+class ReduceNumBits(LayerWithGrads): 
+	"""
+		Glow used 5 bit variant of CelebA. 
+		Flow++ had 3 and 5 bit variants of ImageNet. 
+		These lower bit variants allow better dimensionality reduction. 
+		This layer should be the first within the model. 
+
+		This also means subsequent normalization needs to divide by less. 
+		In this sense likelihood is incomparable between different number of bits. 
+
+		It seems to work, but it is a bit instable. 
+	"""
+	def __init__(self, bits=5):  # assumes input has 8 bits. 
+		self.bits = 5
+		super(ReduceNumBits, self).__init__()
 
 	def call(self, X): 
-		self.prev_shape = X.shape
-		return tf.reshape(X, (-1, ) + self.shape)
+		X = tf.dtypes.cast(X, dtype=np.float32)
+		return X // ( 2**(8-self.bits) )
 
-	def log_det(self): return .0
+	def call_inv(self, Z): 
+		# THIS PART IS NOT INVERTIBLE!!
+		return Z * (2**(8-self.bits))
 
-	def call_inv(self, X): return tf.reshape(X, self.input_shape)
-
-
-
-
-
-class InvResNet(keras.layers.Layer): 			
+	def log_det(self): return 0. 
+		
 
 
+class ActNorm(LayerWithGrads): 
+
+	"""
+		The exp parameter allows the scaling to be exp(s) \odot X. 
+		This cancels out the log in the log_det computations. 
+	"""
+
+	def __init__(self, exp=False, **kwargs): 
+		self.exp = exp
+		super(ActNorm, self).__init__(**kwargs)
+
+	def build(self, input_shape): 
+
+		n, h, w, c = input_shape
+		self.h = h
+		self.w = w
+
+		self.s = self.add_weight(shape=c, 	initializer='ones', name="affine_scale") 
+		self.b = self.add_weight(shape=c, 	initializer='zero', name="affine_bias")
+
+		super(ActNorm, self).build(input_shape)
+		self.built = True
+
+	def call(self, X): 		return X * self.s + self.b
+	def call_inv(self, Z):  return (Z - self.b) / self.s
+
+	def log_det(self): 		return self.h * self.w * tf.reduce_sum(tf.math.log(tf.abs(self.s)))
+
+	def compute_output_shape(self, input_shape): return input_shape
 
 
-	pass # model should automatically use gradient checkpointing if this is used. 
 
 
