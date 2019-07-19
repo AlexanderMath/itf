@@ -5,6 +5,10 @@ from tensorflow.keras.layers import ReLU
 from invtf.override import print_summary
 from invtf.coupling_strategy import *
 
+
+
+
+
 class ReduceNumBits(keras.layers.Layer): 
 	"""
 		Glow used 5 bit variant of CelebA. 
@@ -17,9 +21,9 @@ class ReduceNumBits(keras.layers.Layer):
 
 		It seems to work, but it is a bit instable. 
 	"""
-	def __init__(self, bits=5):  # assumes input has 8 bits. 
+	def __init__(self, bits=5, **kwargs):  # assumes input has 8 bits. 
 		self.bits = 5
-		super(ReduceNumBits, self).__init__()
+		super(ReduceNumBits, self).__init__(**kwargs)
 
 	def call(self, X): 
 		X = tf.dtypes.cast(X, dtype=np.float32)
@@ -65,122 +69,6 @@ class ActNorm(keras.layers.Layer):
 
 
 
-
-"""
-	The affine coupling layer is described in NICE, REALNVP and GLOW. 
-	The description in Glow use a single network to output scale s and transform t, 
-	it seems the description in REALNVP is a bit more general refering to s and t as 
-	different functions. From this perspective Glow change the affine layer to have
-	weight sharing between s and t. 
-	 Specifying a single function is a lot simpler code-wise, we thus use that approach. 
-
-
-	For now assumes the use of convolutions 
-
-"""
-class AffineCoupling(keras.layers.Layer): # Sequential):  	
-
-	def add(self, layer): self.layers.append(layer)
-
-	unique_id = 1
-
-	def __init__(self, part=0, strategy=SplitChannelsStrategy()): 
-		super(AffineCoupling, self).__init__(name="aff_coupling_%i"%AffineCoupling.unique_id)
-		AffineCoupling.unique_id += 1
-		self.part 		= part 
-		self.strategy 	= strategy
-		self.layers = []
-		self._is_graph_network = False
-		self.precomputed_log_det = 0.
-
-	def _check_trainable_weights_consistency(self): return True
-
-	def build(self, input_shape):
-
-		# handle the issue with each network output something larger. 
-		_, h, w, c = input_shape
-
-
-		h, w, c = self.strategy.coupling_shape(input_shape=(h,w,c))
-
-		self.layers[0].build(input_shape=(None, h, w, c))
-		out_dim = self.layers[0].compute_output_shape(input_shape=(None, h, w, c))
-		self.layers[0].output_shape_ = out_dim
-
-		for layer in self.layers[1:]:  
-			layer.build(input_shape=out_dim)
-			out_dim = layer.compute_output_shape(input_shape=out_dim)
-			layer.output_shape_ = out_dim
-
-
-		super(AffineCoupling, self).build(input_shape)
-		self.built = True
-
-	def call_(self, X): 
-
-		in_shape = tf.shape(X)
-		n, h, w, c = X.shape
-
-		for layer in self.layers: 
-			X = layer.call(X) 
-
-		# TODO: Could have a part of network learned specifically for s,t to not ONLY have wegith sharing? 
-		
-		# Using strategy from 
-		# https://github.com/openai/glow/blob/eaff2177693a5d84a1cf8ae19e8e0441715b82f8/model.py#L376
-		X = tf.reshape(X, (-1, h, w, c*2))
-		s = X[:, :, :, ::2] # add a strategy pattern to decide how the output is split. 
-		t = X[:, :, :, 1::2]  
-		#s = tf.math.sigmoid(s)
-
-		#s = X[:, :, w//2:, :]
-		#t = X[:, :, :w//2, :]  
-
-		s = tf.reshape(s, in_shape)
-		t = tf.reshape(t, in_shape)
-
-		return s, t
-
-	def call(self, X): 		
-
-		x0, x1 = self.strategy.split(X)
-
-		if self.part == 0: 
-			s, t 	= self.call_(x1)
-			x0 		= x0*s + t # glow changed order of this? i.e. translate then scale. 
-
-		if self.part == 1: 
-			s, t 	= self.call_(x0)
-			x1 		= x1*s + t 
-
-		self.precompute_log_det(s, X)
-
-		X 		= self.strategy.combine(x0, x1)
-		return X
-
-	def call_inv(self, Z):	 
-		z0, z1 = self.strategy.split(Z)
-		
-		if self.part == 0: 
-			s, t 	= self.call_(z1)
-			z0 		= (z0 - t)/s
-		if self.part == 1: 
-			s, t 	= self.call_(z0)
-			z1 		= (z1 - t)/s
-
-		Z 		= self.strategy.combine(z0, z1)
-		return Z
-
-	def precompute_log_det(self, s, X): 
-		n 		= tf.dtypes.cast(tf.shape(X)[0], tf.float32)
-		self.precomputed_log_det = tf.reduce_sum(tf.math.log(tf.abs(s))) / n
-
-	def log_det(self): 		  return self.precomputed_log_det
-
-	def compute_output_shape(self, input_shape): return input_shape
-
-	def summary(self, line_length=None, positions=None, print_fn=None):
-		print_summary(self, line_length=line_length, positions=positions, print_fn=print_fn) # fixes stupid issue.
 
 
 
@@ -276,6 +164,7 @@ class Inv1x1Conv(keras.layers.Layer):
 			2. QR
 			3. Normal determinant O(c^3)
 			4. tensordot vs conv2d. 
+			5. Identity Initialization. 
 	"""
 
 	def build(self, input_shape): 
@@ -379,82 +268,6 @@ class Inv1x1ConvPLU(keras.layers.Layer):
 
 	def log_det(self): 		  # det computations are way too instable here.. 
 		return self.h * self.w * tf.math.log(tf.abs( tf.linalg.det(self.kernel) ))   # Looks fine? 
-
-	def compute_output_shape(self, input_shape): return input_shape
-
-
-"""
-	For simplicity we vectorize input and apply coupling to even/odd entries. 
-	Could also use upper/lower. Refactor this to support specifying the pattern as a parameter. 
-
-	TODO: 
-		Potentially refactor so we can add directly to AdditiveCoupling instead of creating 'm'
-		by (potentially adding to Sequential) and passing this on to AdditiveCoupling. 
-		The main issue is AdditiveCoupling is R^2-> R^2 while m:R^1->R^1, so if we 
-		add directly to AdditiveCoupling we run into issues with miss matching dimensions. 
-	
-"""
-class AdditiveCoupling(keras.Sequential):  # refactor to be layer and to support both (None, 28**2) and (None, 28, 28, 1). 
-
-	unique_id = 1
-
-	def __init__(self, part=0, strategy=SplitOnHalfStrategy()): # strategy: alternate / split  ;; alternate does odd/even, split has upper/lower. 
-		super(AdditiveCoupling, self).__init__(name="add_coupling_%i"%AdditiveCoupling.unique_id)
-		AdditiveCoupling.unique_id += 1
-		self.part 	= part 
-		self.strategy = strategy
-
-
-	def build(self, input_shape):
-		_, d = input_shape # assumes vectorized input
-
-		self.layers[0].build(input_shape=(None, d//2))
-		out_dim = self.layers[0].compute_output_shape(input_shape=(None, d//2))
-
-		for layer in self.layers[1:]:  
-			layer.build(input_shape=out_dim)
-			out_dim = layer.compute_output_shape(input_shape=out_dim)
-
-		super(AdditiveCoupling, self).build(input_shape)
-		self.built = True
-
-	def call_(self, X): 
-		for layer in self.layers: 
-			X = layer.call(X)
-		return X
-
-	def call(self, X): 		
-		shape 	= tf.shape(X)
-		d 		= tf.reduce_prod(shape[1:])
-		X 		= tf.reshape(X, (shape[0], d))
-
-		x0, x1 = self.strategy.split(X)
-
-		if self.part == 0: x0 		= x0 + self.call_(x1)
-		if self.part == 1: x1 		= x1 + self.call_(x0)
-
-		X = self.strategy.combine(x0, x1)
-
-		X 		= tf.reshape(X, shape)
-		return X
-
-	def call_inv(self, Z):	 
-		shape 	= tf.shape(Z)
-		d 		= tf.reduce_prod(shape[1:])
-		Z 		= tf.reshape(Z, (shape[0], d))
-
-		z0, z1 = self.strategy.split(Z)
-		
-		if self.part == 0: z0 		= z0 - self.call_(z1)
-		if self.part == 1: z1 		= z1 - self.call_(z0)
-
-		Z = self.strategy.combine(z0, z1)
-
-		Z 		= tf.reshape(Z, shape)
-		return Z
-
-
-	def log_det(self): 		return 0. 
 
 	def compute_output_shape(self, input_shape): return input_shape
 
@@ -565,7 +378,7 @@ class Normalize(keras.layers.Layer):  # normalizes data after dequantization.
 		return Z
 
 	def log_det(self): 
-		return self.d * tf.math.log(self.scale)
+		return self.d * tf.dtypes.cast(tf.math.log(self.scale), dtype=tf.float32)
 
 
 class MultiScale(keras.layers.Layer): 
@@ -593,9 +406,9 @@ class MultiScale(keras.layers.Layer):
 """
 class Conv3DCirc(keras.layers.Layer): 
 
-	def __init__(self,trainable=True): 
+	def __init__(self,trainable=True, **kwargs): 
 		self.built = False
-		super(Conv3DCirc, self).__init__()
+		super(Conv3DCirc, self).__init__(**kwargs)
 
 	def build(self, input_shape): 
 		self.scale = np.sqrt(np.prod(input_shape[1:])) 
