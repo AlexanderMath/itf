@@ -6,10 +6,48 @@ from invtf.override import print_summary
 from invtf.coupling_strategy import *
 
 
+#TODO Write unit tests
+class InvLayer(keras.layers.Layer):     # changed name 
+	"""
+		This is a virtual class from which all layer classes need to inherit
+		It has the function `compute gradients` which is used for constant 
+		memory backprop.
+	"""
+	# This is default behaviour in Python. 
+	def __init__(self,**kwargs): super(InvLayer, self).__init__(**kwargs)
+
+	def call(self,X): 		raise NotImplementedError()
+	def call_inv(self,X): 	raise NotImplementedError()
+	def log_det(self): 		raise NotImplementedError()
+
+	def compute_gradients(self,x,dy,regularizer=None,scaling=1):  
+		'''
+		Computes gradients for backward pass
+		Args:
+			x - tensor compatible with forward pass, input to the layer
+			dy - incoming gradient from backprop
+			regularizer - function, indicates dependence of loss on weights of layer
+		Returns
+			dy - gradients wrt input, to be backpropagated
+			grads - gradients wrt weights
+		'''
+		#TODO check if log_det of AffineCouplingLayer depends needs a regularizer.
+		with tf.GradientTape() as tape:
+			tape.watch(x)
+			y_ = self.call(x)   #Required to register the operation onto the gradient tape
+		grads_combined = tape.gradient(y_,[x]+self.trainable_variables,output_gradients=dy)
+		dy,grads = grads_combined[0],grads_combined[1:]
+
+		if regularizer is not None:
+			with tf.GradientTape() as tape:
+				reg = -regularizer()/scaling
+			#print(self.trainable_variables)
+			grads_wrt_reg = tape.gradient(reg, self.trainable_variables)
+			grads = [a[0]+a[1] for a in zip(grads,grads_wrt_reg) if a[1] is not None]
+		return dy,grads
 
 
-
-class ReduceNumBits(keras.layers.Layer): 
+class ReduceNumBits(InvLayer): 
 	"""
 		Glow used 5 bit variant of CelebA. 
 		Flow++ had 3 and 5 bit variants of ImageNet. 
@@ -37,7 +75,7 @@ class ReduceNumBits(keras.layers.Layer):
 		
 
 
-class ActNorm(keras.layers.Layer): 
+class ActNorm(InvLayer): 
 
 	"""
 		The exp parameter allows the scaling to be exp(s) \odot X. 
@@ -78,7 +116,7 @@ class ActNorm(keras.layers.Layer):
 
 """
 
-class Linear(keras.layers.Layer): 
+class Linear(InvLayer): 
 
 	def __init__(self, **kwargs): super(Linear, self).__init__(**kwargs)
 
@@ -106,7 +144,7 @@ class Linear(keras.layers.Layer):
 		return input_shape
 
 
-class Affine(keras.layers.Layer): 
+class Affine(InvLayer): 
 
 	"""
 		The exp parameter allows the scaling to be exp(s) \odot X. 
@@ -150,7 +188,7 @@ class Affine(keras.layers.Layer):
 
 
 
-class Inv1x1Conv(keras.layers.Layer):  
+class Inv1x1Conv(InvLayer):  
 	"""
 		Based on Glow page 11 appendix B. 
 		It is possible to speed up determinant computation by using PLU or QR decomposition
@@ -198,7 +236,7 @@ class Inv1x1Conv(keras.layers.Layer):
 
 
 
-class Inv1x1ConvPLU(keras.layers.Layer):  
+class Inv1x1ConvPLU(InvLayer):  
 	"""
 		Based on Glow page 11 appendix B. 
 		It is possible to speed up determinant computation by using PLU or QR decomposition
@@ -274,7 +312,7 @@ class Inv1x1ConvPLU(keras.layers.Layer):
 
 
 
-class AdditiveCouplingReLU(keras.layers.Layer): 
+class AdditiveCouplingReLU(InvLayer): 
 
 	unique_id = 1
 
@@ -325,7 +363,7 @@ class AdditiveCouplingReLU(keras.layers.Layer):
 		- Downscale images, e.g. alternate pixels and have 4 lower dim images and stack them. 
 		- ... 
 """
-class Squeeze(keras.layers.Layer): 
+class Squeeze(InvLayer): 
 
 	def call(self, X): 
 		n, self.w, self.h, self.c = X.shape
@@ -337,7 +375,7 @@ class Squeeze(keras.layers.Layer):
 	def log_det(self): return 0. 
 
 
-class UnSqueeze(keras.layers.Layer): 
+class UnSqueeze(InvLayer): 
 
 	def call(self, X): 
 		n, self.w, self.h, self.c = X.shape
@@ -350,13 +388,13 @@ class UnSqueeze(keras.layers.Layer):
 
 
 
-class Normalize(keras.layers.Layer):  # normalizes data after dequantization. 
+class Normalize(InvLayer):  # normalizes data after dequantization. 
 	"""
 
 	"""
 
-	def __init__(self, bits=None, target=[-1,+1], scale=127.5, input_shape=[]):
-		super(Normalize, self).__init__()
+	def __init__(self, bits=None, target=[-1,+1], scale=127.5, input_shape=[], **kwargs):
+		super(Normalize, self).__init__(**kwargs)
 		self.target = target
 
 		if bits is None: 	self.scale = 1 / 127.5 
@@ -381,7 +419,7 @@ class Normalize(keras.layers.Layer):  # normalizes data after dequantization.
 		return self.d * tf.dtypes.cast(tf.math.log(self.scale), dtype=tf.float32)
 
 
-class MultiScale(keras.layers.Layer): 
+class MultiScale(InvLayer): 
 
 	def call(self, X):  # TODO: have different strategies here, and combine it with how coupling layer works? 
 		n, w, h, c = X.shape
@@ -404,7 +442,7 @@ class MultiScale(keras.layers.Layer):
 """
 	There's an issue with scaling, which intuitively makes step-size VERY small. 
 """
-class Conv3DCirc(keras.layers.Layer): 
+class Conv3DCirc(InvLayer): 
 
 	def __init__(self,trainable=True, **kwargs): 
 		self.built = False
@@ -482,7 +520,7 @@ class ResidualConv3DCirc(Conv3DCirc):
 		self.built = True
 
 
-class Reshape(keras.layers.Layer):
+class Reshape(InvLayer):
 	def __init__(self, shape): 
 		self.shape = shape
 		super(Reshape, self).__init__()
@@ -499,9 +537,7 @@ class Reshape(keras.layers.Layer):
 
 
 
-class InvResNet(keras.layers.Layer): 			
-
-
+class InvResNet(InvLayer): 			
 
 
 	pass # model should automatically use gradient checkpointing if this is used. 

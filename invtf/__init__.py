@@ -22,6 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt 
 
 import time
+from tqdm import tqdm# TODO: remove this, it adds more dependencies to user. 
 
 print("TF Version: \t", tf.__version__)
 print("Eager: \t\t", tf.executing_eagerly())
@@ -32,7 +33,6 @@ print("-------------------------------\n")
 class Generator(keras.Model): 
 	"""
 		Linear stack of invertible layers for a generative model. 
-
 
 		----------------------------------------------------------------------------------------
 
@@ -48,23 +48,20 @@ class Generator(keras.Model):
 			> # Model
 			> g = invtf.Generator()
 
-			> # Pre-process
 			> g.add(invtf.dequantize.UniformDequantize(input_shape=input_shape)) 
 			> g.add(invtf.layers.Normalize()) 
 
-			> # Actual model. 
 			> g.add(invtf.layers.Squeeze())
 
 			> for _ in range(10): 
 			> 	g.add(invtf.layers.ActNorm())
 			> 	g.add(invtf.layers.Conv3DCirc())
 			> 	g.add(invtf.layers.AdditiveCouplingReLU()) 
-			>    
-			>	# If the line below is uncommented, the architecture
-			>	# becomes a multi-scale architecture similar to [1,2].
+
+			>	# Ucommenting next line makes architecture multi-scale similar to [1,2].
 			>	# if i == 5: g.add(invtf.layers.MultiScale())
 
-			> # Prepare model for training and print summary. 
+			> # Prepare model for training and prints summary. 
 			> g.compile()		# handles maximum likelihood computations. 
 			> g.init(X[:1000])	# handles data dependent initialization as used in [2]. 
 			> g.summary()
@@ -263,7 +260,7 @@ class Generator(keras.Model):
 	
 
 
-	def compile(self, optimizer=keras.optimizers.Adam(0.001), **kwargs):	
+	def compile(self, optimizer=keras.optimizers.Adam(), **kwargs):	
 		"""
 			Compiles the model to minimize negative log likelihood.  The different terms of the loss 
 			function is added as metric, this is often useful information during training. 
@@ -651,12 +648,15 @@ class Generator(keras.Model):
 
 			if isinstance(layer, invtf.layers.MultiScale): X = X[0]
 
-	def fit(self, X, **kwargs): 
+	def fit(self, X, memory="linear", **kwargs): 
 		"""
 			Trains the model to maximize the likelihood of the data. 
 			
 			Arguments:
-				X:	Input data, typically in NumPy format. 
+				X:			Input data, typically in NumPy format. 
+				memory: 	Different back propagation algorithms, use O(L) 
+							or O(1) memory. The O(L) is X % faster but uses
+							substantially more memory. 
 
 			Comments:
 				We are doing unsupervised learning, but the Keras API requires 
@@ -667,9 +667,14 @@ class Generator(keras.Model):
 				this just provides the fit function with another pointer to X, which
 				would have a negligible effect on performance.
 
-		"""
-		return super(Generator, self).fit(X, y=X, **kwargs)	
+				Further investigate performance gap between different 
+				backpropagation algorithms. 
 
+		"""
+		if 		memory == "linear": 		return super(Generator, self).fit(X, y=X, **kwargs)	
+		elif 	memory == "constant": 		return self.fit_constant_memory(X, **kwargs)
+		elif 	memory == "sqrt": 			raise NotImplementedError()
+		else: 	raise Exception("Backpropagation algorithm \"%s\" is not supported. "%memory)
 
 
 	"""
@@ -805,5 +810,213 @@ class Generator(keras.Model):
 
 		plt.tight_layout()
 		plt.show()
+
+
+
+
+	"""
+		Constant O(1) memory back propagation code. A big thanks to AnshulN. 
+
+
+		Comments: 
+
+			(1) The original fit method takes an argument "memory". It currently supports
+			"linear" and "constant". The "linear" argument uses the inherited fit function
+			and the "constant" uses the functionality below. Ideally we also want a "sqrt"
+			strategy for models like iResNet were inversion is slow. 
+
+			(2) 
+
+
+		I think there is a substantial advantage to being able to use our own
+		and the fit function inherited from Model. To this end I think there is 
+		a lot of value in adhering to the Keras API. (this introduce annoying y_pred, y_true and model.compile
+		things which we could've circumvented with out own thing; also, optimizer needs to be a part 
+		of compile and not fit. )
+		
+		Issues; 
+			There is error in loss computation 
+			Memory is not substantially lower, garbage collect?
+			Roughly 3x slower, the default fit is run as graph I don't think the fit below is. maybe use @tf.function? 
+
+		TODO: get the nice printing of keras thing to work for our own fit, this will help debugging the
+		likelihood issues.  First issue is finding the fit method in GitHub... Main fle seems to be 'model_iteration' 
+		inside https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/keras/engine/training_arrays.py
+		since we usually train given an array. This is called by 'functools' which might speed up stuff??? 
+
+	"""
+	def train_on_batch(self,X,optimizer=None):
+		'''
+		Computes gradients efficiently and updates weights
+		Returns - Loss on the batch
+		TODO - see keras.engine.train_generator.py , they use a similar function.
+		'''
+
+		X = tf.constant(X) 		# TODO: keras masking breaks if X is numpy array. 
+
+		# """I think putting this in context records all operations onto the tape, 
+		# thereby destroying purpose of checkpointing.""" - Anshul
+		# I think with eager computation this gives us the output? 
+		x = self.call(X)        
+
+		last_layer = self.layers[-1]
+		#Computing gradients of loss function wrt the last acticvation
+		with tf.GradientTape() as tape:
+			tape.watch(x)
+			loss = self.loss(x, x)    #May have to change # TODO: added extra 'x' to satisfy previous keras metric loss function.
+
+		grads_combined 	= tape.gradient(loss,[x])
+		dy 				= grads_combined[0]
+		y 				= x
+
+		#Computing gradients for each layer
+		for layer in self.layers[::-1]:     
+			#print(layer)
+			if isinstance(layer, invtf.layers.Squeeze): break # TODO: hack for now. 
+			x = layer.call_inv(y)
+			dy,grads = layer.compute_gradients(x,dy,layer.log_det)	#TODO implement scaling here...
+			#optimizer.apply_gradients(zip(gradientsrads,layer.trainable_variables))
+			optimizer.apply_gradients(zip(grads,layer.trainable_variables))
+			y = x 
+		return loss
+
+
+
+	# Shuffle has issue with np.random.permute if we decorate as @tf.function
+	def fit_constant_memory(self, X, batch_size=32,epochs=1,verbose=1,validation_split=0.0,
+    validation_data=None,
+    shuffle=False,
+	initial_epoch=0,
+    steps_per_epoch=None,
+    validation_steps=None,
+    validation_freq=1,
+	optimizer=tf.optimizers.Adam(),**kwargs): 
+		'''
+		Fits the model on dataset `X (not a generator)
+		Note - for very big datasets, the function will give OOM, 
+			   consider using a generator
+		Args-
+		X - Data to be fitted. Maybe one of the following-
+				tf.EagerTensor
+				np.ndarray
+		batch_size - Number of elements in each minibatch
+		verbose - Logging level
+		validation_split - Amount of data to be used for validation in each epoch
+						   For tensors or arrays, data is extracted from initial part of dataset.
+		shuffle - Should training data be shuffled before mini-batches are extracted
+		steps_per_epoch - Number of training steps per epoch. Used mainly for generators.
+	    validation_steps - Number of validation steps per epoch. Used mainly for generators.
+
+		'''
+		# TODO add all callbacks from tf.keras.Model.fit 
+		# TODO return a history object instead of array of losses
+		all_losses = []
+		if validation_split > 0 and validation_data is None:
+			validation_data = X[:int(len(X)*validation_split)]
+			X = X[int(len(X)*validation_split):]
+
+		epoch_gen = range(initial_epoch,epochs)
+		if verbose == 1:
+			epoch_gen = tqdm(epoch_gen)
+		batch_size = min(batch_size,X.shape[0])	#Sanity check
+		num_batches = X.shape[0] // batch_size
+		if steps_per_epoch == None:
+			steps_per_epoch = num_batches
+		val_count = 0
+
+		for j in epoch_gen:
+			if shuffle == True: X = np.random.permutation(X)	#Works for np.ndarray and tf.EagerTensor, however, turns everything to numpy
+			#Minibatch gradient descent
+			range_gen = range(steps_per_epoch)
+			if verbose == 2:
+				range_gen = tqdm(range_gen)
+			for i in range_gen:    
+				losses = []
+				loss = self.train_on_batch(X[i*batch_size:(i+1)*(batch_size)], optimizer)
+				print("\rLoss: \t", loss, end="")
+				losses.append(loss.numpy())
+			loss = np.mean(losses)  
+			all_losses+=losses
+			to_print = 'Epoch: {}/{}, training_loss: {}'.format(j,epochs,loss)
+			if validation_data is not None and val_count%validation_freq==0:
+				val_loss = self.loss(validation_data)
+				to_print += ', val_loss: {}'.format(val_loss.numpy())	#TODO return val_loss somehow
+			if verbose == 2:
+				print(to_print)
+			val_count+=1
+		return all_losses
+
+	def fit_generator(self, generator,steps_per_epoch=None,initial_epoch=0,
+		epochs=1,
+		verbose=1,validation_data=None,
+	    validation_freq=1,
+		shuffle=True,
+		max_queue_size=10,
+	    workers=1,
+	    use_multiprocessing=False,
+		optimizer=tf.optimizers.Adam(),
+		**kwargs): 
+		'''
+		Fits model on the data generator `generator
+		IMPORTANT - Please consider using invtf.data.load_image_dataset()
+		Args - 
+		generator - tf.data.Dataset, tf.keras.utils.Sequence or python generator
+		validation_data - same type as generator
+		steps_per_epoch - int, number of batches per epoch.
+		'''
+		#TODO add callbacks and history
+		all_losses = []
+		if isinstance(generator,tf.keras.utils.Sequence):
+			enqueuer = tf.keras.utils.OrderedEnqueuer(generator,use_multiprocessing,shuffle)	
+			if steps_per_epoch == None:
+				steps_per_epoch = len(generator)	#TODO test this, see if it works for both Sequence and Dataset
+			enqueuer.start(workers=workers, max_queue_size=max_queue_size)
+			output_generator = enqueuer.get()				
+		elif isinstance(generator,tf.data.Dataset):
+			output_generator = iter(generator)
+		else:
+			enqueuer = tf.keras.utils.GeneratorEnqueuer(generator,use_multiprocessing)	# Can't shuffle here!
+			enqueuer.start(workers=workers, max_queue_size=max_queue_size)	
+			output_generator = enqueuer.get()	
+		if validation_data is not None:		#Assumption that validation data and generator are same type
+			if isinstance(generator,tf.keras.utils.Sequence):
+				val_enqueuer = tf.keras.utils.OrderedEnqueuer(validation_data,use_multiprocessing,shuffle)	
+				val_enqueuer.start(workers=workers, max_queue_size=max_queue_size)
+				val_generator = val_enqueuer.get()				
+			elif isinstance(generator,tf.data.Dataset):
+				val_generator = iter(val_generator)
+			else:
+				val_enqueuer = tf.keras.utils.GeneratorEnqueuer(validation_data,use_multiprocessing)	# Can't shuffle here!
+				val_enqueuer.start(workers=workers, max_queue_size=max_queue_size)	
+				val_generator = val_enqueuer.get()	
+
+		if steps_per_epoch == None:
+			raise ValueError("steps_per_epoch cannot be None with provided generator")
+		epoch_gen = range(initial_epoch,epochs)
+		if verbose == 1:
+			epoch_gen = tqdm(epoch_gen)
+		for j in epoch_gen:
+			range_gen = range(steps_per_epoch)
+			if verbose == 2:
+				range_gen = tqdm(range_gen)
+			for i in range_gen:
+				losses = []
+				loss = self.train_on_batch(next(output_generator),optimizer)
+				losses.append(loss.numpy())
+			loss = np.mean(losses)  
+			to_print = 'Epoch: {}/{}, training_loss: {}'.format(j,epochs,loss)
+			if validation_data is not None and val_count%validation_freq==0:
+				val_loss = self.loss(next(val_generator))
+				to_print += ', val_loss: {}'.format(val_loss.numpy())	#TODO return val_loss somehow
+			if verbose == 2:
+				print(to_print)
+			all_losses+=losses
+			val_count+=1
+		try:
+			if enqueuer is not None:
+				enqueuer.stop()			
+		except:
+			pass
+		return all_losses
 
 
