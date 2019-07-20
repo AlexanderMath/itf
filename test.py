@@ -50,11 +50,11 @@
 
 """
 import unittest
-#from test.shape 		import *
+from test.shape 		import *
 from test.jacobian 		import *
-#from test.optimality 	import *
 from test.inverse 		import *
 from test.optimality 	import *
+from test.gradients 	import *
 
 if __name__ == "__main__": 
 
