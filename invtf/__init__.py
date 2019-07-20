@@ -197,7 +197,7 @@ class Generator(keras.Model):
 
 
 
-	def loss(self, y_true, y_pred):	 
+	def loss(self, y_true, y_pred, seperate=False):	 
 		"""
 			Computes negative log likelihood in bits per dimension. If the model uses Variational 
 			Dequantization it incorporates this into the loss function, see equation (12) from [1]. 
@@ -230,7 +230,13 @@ class Generator(keras.Model):
 			[2] Usage of loss functions											https://keras.io/losses/
 
 		"""
-		return self.loss_log_det(y_true, y_pred) + self.loss_log_latent_density(y_true, y_pred) + self.loss_log_var_dequant(y_true, y_pred)
+		lgdet 		= self.loss_log_det(y_true, y_pred) 
+		lglatent 	= self.loss_log_latent_density(y_true, y_pred)
+		lgdequant 	= self.loss_log_var_dequant(y_true, y_pred)
+		total		= lgdet + lglatent + lgdequant
+
+		if seperate: 	return total, lgdet, lglatent, lgdequant
+		else: 			return total
 
 	def print_loss(self, X): 
 		"""
@@ -845,7 +851,7 @@ class Generator(keras.Model):
 		since we usually train given an array. This is called by 'functools' which might speed up stuff??? 
 
 	"""
-	def train_on_batch(self,X,optimizer=None):
+	def train_on_batch(self, X, optimizer=None):
 		'''
 		Computes gradients efficiently and updates weights
 		Returns - Loss on the batch
@@ -863,7 +869,9 @@ class Generator(keras.Model):
 		#Computing gradients of loss function wrt the last acticvation
 		with tf.GradientTape() as tape:
 			tape.watch(x)
-			loss = self.loss(x, x)    #May have to change # TODO: added extra 'x' to satisfy previous keras metric loss function.
+
+			#May have to change # TODO: added extra 'x' to satisfy previous keras metric loss function.
+			loss, lgdet, lglatent, lgdequant = self.loss(x, x, seperate=True)    
 
 		grads_combined 	= tape.gradient(loss,[x])
 		dy 				= grads_combined[0]
@@ -878,7 +886,8 @@ class Generator(keras.Model):
 			#optimizer.apply_gradients(zip(gradientsrads,layer.trainable_variables))
 			optimizer.apply_gradients(zip(grads,layer.trainable_variables))
 			y = x 
-		return loss
+
+		return [("loss", loss), ("lgdet", lgdet), ("lglatent", lglatent), ("lgdequant", lgdequant)]
 
 
 
@@ -916,25 +925,27 @@ class Generator(keras.Model):
 			X = X[int(len(X)*validation_split):]
 
 		epoch_gen = range(initial_epoch,epochs)
-		if verbose == 1:
-			epoch_gen = tqdm(epoch_gen)
+
 		batch_size = min(batch_size,X.shape[0])	#Sanity check
 		num_batches = X.shape[0] // batch_size
 		if steps_per_epoch == None:
 			steps_per_epoch = num_batches
 		val_count = 0
 
+		progress_bar = keras.utils.Progbar(97)
+
 		for j in epoch_gen:
+
 			if shuffle == True: X = np.random.permutation(X)	#Works for np.ndarray and tf.EagerTensor, however, turns everything to numpy
 			#Minibatch gradient descent
 			range_gen = range(steps_per_epoch)
-			if verbose == 2:
-				range_gen = tqdm(range_gen)
+
+
 			for i in range_gen:    
 				losses = []
 				loss = self.train_on_batch(X[i*batch_size:(i+1)*(batch_size)], optimizer)
-				print("\rLoss: \t", loss, end="")
-				losses.append(loss.numpy())
+				progress_bar.update(i+1, values=loss)
+
 			loss = np.mean(losses)  
 			all_losses+=losses
 			to_print = 'Epoch: {}/{}, training_loss: {}'.format(j,epochs,loss)
@@ -993,8 +1004,7 @@ class Generator(keras.Model):
 		if steps_per_epoch == None:
 			raise ValueError("steps_per_epoch cannot be None with provided generator")
 		epoch_gen = range(initial_epoch,epochs)
-		if verbose == 1:
-			epoch_gen = tqdm(epoch_gen)
+		if verbose == 1: epoch_gen = tqdm(epoch_gen)
 		for j in epoch_gen:
 			range_gen = range(steps_per_epoch)
 			if verbose == 2:
