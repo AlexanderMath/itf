@@ -151,7 +151,7 @@ class AdditiveCoupling(CouplingLayer):
 	def add(self, layer): self.layers.append(layer)
 
 	def build(self, input_shape):
-		print("INput Shape: ", input_shape)
+		print("Input Shape: ", input_shape)
 
 		if len(input_shape) == 2: # input is vectorized. 
 			_, d = input_shape 
