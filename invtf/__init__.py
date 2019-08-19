@@ -10,7 +10,7 @@ import invtf.coupling_strategy
 import invtf.datasets
 import invtf.dequantize
 import invtf.discrete_bijections
-import invtf.grow_memory
+# import invtf.grow_memory
 import invtf.latent
 import invtf.layers
 import invtf.models
@@ -879,11 +879,9 @@ class Generator(keras.Model):
 
 		#Computing gradients for each layer
 		for layer in self.layers[::-1]:     
-			#print(layer)
 			if isinstance(layer, invtf.layers.Squeeze): break # TODO: hack for now. 
 			x = layer.call_inv(y)
 			dy,grads = layer.compute_gradients(x,dy,layer.log_det)	#TODO implement scaling here...
-			#optimizer.apply_gradients(zip(gradientsrads,layer.trainable_variables))
 			optimizer.apply_gradients(zip(grads,layer.trainable_variables))
 			y = x 
 
@@ -937,9 +935,9 @@ class Generator(keras.Model):
 		for j in epoch_gen:
 
 			if shuffle == True: X = np.random.permutation(X)	#Works for np.ndarray and tf.EagerTensor, however, turns everything to numpy
+
 			#Minibatch gradient descent
 			range_gen = range(steps_per_epoch)
-
 
 			for i in range_gen:    
 				losses = []
