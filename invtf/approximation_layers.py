@@ -8,6 +8,11 @@ from tensorflow.keras.layers import ReLU, Conv2D
 from invtf.override import print_summary
 from invtf.coupling_strategy import *
 
+# True is column false is row
+vectorize = lambda x, t: tf.reshape(x, (tf.squeeze(x).shape[0], 1)) if t else tf.reshape(x, (1, tf.squeeze(x).shape[0]))
+
+def _l2normalize(v, eps=1e-12):
+	return v / (tf.reduce_sum(v ** 2) ** 0.5 + eps)
 
 class SpectralNormalizationConstraint(keras.constraints.Constraint):
 	def __init__(self, coeff, input_shape, n_power_iter=5, strides=None, padding=None, **kwargs):
@@ -17,48 +22,78 @@ class SpectralNormalizationConstraint(keras.constraints.Constraint):
 				input_shape:	Input_shape of the layer to be normalized
 				n_power_iter:	Number of power iterations to estimate largest eigenvalue (iResNet default is 0.9)
 		"""
-		# TODO do spectral normalization.
+		# TODO this implementation does not use the trick for minimizing iterations
+		# by only doing one step for each gradient step.
 		# Not sure how many power iterations is needed? 5 is default in iResNet.
 		super(SpectralNormalizationConstraint, self).__init__(**kwargs)
 		self.coeff = coeff
 		self.n_power_iter = n_power_iter if n_power_iter >= 0 else 5
 		self.input_shape = input_shape
-		if strides and padding:
-			self.strides = strides
-			self.padding = padding
+		self.strides = strides
+		self.padding = padding
 
-	def __call__(self, w):
+	def _power_iteration_conv(self, w):
+		params	= {'strides': self.strides, 'padding': self.padding}
+
+		input_shape		= [1] + [int(i) for i in self.input_shape[1:]]
+
+		# initialize u and v to norm 1 random vectors and calc output shape
+		v				= _l2normalize(tf.random.normal((tf.reduce_prod(input_shape),)))
+
+		tmp				= tf.nn.conv2d(tf.reshape(v, input_shape), w, **params)
+		output_shape	= tmp.shape
+
+		u				= _l2normalize(tf.random.normal((tf.reduce_prod(output_shape),)))
+
+		# Helper reshape functions
+		inp		= lambda v: tf.reshape(v, input_shape)	# Reshape to input_shape
+		out		= lambda u: tf.reshape(u, output_shape)	# Reshape to output_shape
+		flat	= lambda x: tf.reshape(x, [-1])			# Flatten
+		
+		# Power iteration
+		for _ in range(self.n_power_iter):
+			v_s	= tf.nn.conv2d_transpose(out(u), w, output_shape=input_shape, **params)
+			v	= _l2normalize(flat(v_s))
+
+			u_s = tf.nn.conv2d(inp(v), w, **params)
+			u	= _l2normalize(flat(u_s))
+
+		# Normalization v @ W @ u^T
+		vW		= tf.nn.conv2d(inp(v), w, **params)
+		sigma	= tf.tensordot(flat(vW), u, 1)
+
+		return tf.maximum(1., sigma / self.coeff)
+
+	def _power_iteration_dense(self, w):
+		def power_iteration(W, u):
+			#Accroding the paper, we only need to do power iteration one time for each iteration.
+			#However, we cannot store weights in Contraints, so we cannot use that trick.
+			_u = u
+			_v = _l2normalize( vectorize(_u, False) @ tf.transpose(W))
+			_u = _l2normalize( _v @ W )
+			return _u, _v
+
+		u = tf.random.normal((w.shape[-1],))
+		for i in range(self.n_power_iter): 
+			u, v = power_iteration(w, u)
+
+		sigma = vectorize(v, False) @ w @ vectorize(u, True)
+		return tf.maximum(1., sigma / self.coeff)
+ 
+	def _call_include_sigma(self, w): # This function is mainly used for tests of constraints ( to be able to extract sigma )
+		factor1 = None
 		if self.strides: # Conv
-			input_shape		= [1] + [int(i) for i in self.input_shape[1:]]
-
-			# initialize u and v to norm 1 random vectors
-			v				= normalize(tf.random.normal((tf.reduce_prod(input_shape),)))
-
-			tmp				= tf.nn.conv2d(tf.reshape(v, input_shape), w, strides=self.strides, padding=self.padding)
-			output_shape	= tmp.shape
-
-			u				= normalize(tf.random.normal((tf.reduce_prod(output_shape),)))
-
-			inp		= lambda v: tf.reshape(v, input_shape)
-			out		= lambda u: tf.reshape(u, output_shape)
-			flat	= lambda x: tf.reshape(x, [-1])
-			params	= {'strides': self.strides, 'padding': self.padding}
-			
-			# Power iteration
-			for _ in range(self.n_power_iter):
-				v_s	= tf.nn.conv2d_transpose(out(u), w, output_shape=input_shape, **params)
-				v	= normalize(flat(v))
-
-				u_s = tf.nn.conv2d(inp(v), w, **params)
-				u	= normalize(flat(u))
-
-			# Normalization
-			vW		= tf.nn.conv2d(inp(v), w, **params)
-			sigma	= tf.tensordot(flat(vW), u, 1)
-			factor	= tf.maximum(1., sigma / self.coeff)
+			factor = self._power_iteration_conv(w)
+		else:
+			factor = self._power_iteration_dense(w)
 			
 		res = w / (factor + 1e-5) # Stability
-		return res
+		return res, factor
+
+	def __call__(self, w):
+		scaled_weights, sigma = self._call_include_sigma(w)
+		return scaled_weights
+
 
 class ResidualBlock(keras.layers.Layer):
 	"""

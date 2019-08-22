@@ -1,109 +1,88 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-import unittest
 import tensorflow as tf
 import tensorflow.keras as keras
-from tensorflow.keras import Sequential
-from tensorflow.keras.layers import Conv2D
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.losses import MeanSquaredError
-from tensorflow.math import l2_normalize as normalize
-
 import numpy as np
 import matplotlib.pyplot as plt
+import unittest
+
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Conv2D, Dense
+from tensorflow.keras.losses import MeanSquaredError
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.constraints import NonNeg
 
 # Local lib
 import sys
 sys.path.append("../")
 from invtf.approximation_layers import ResidualBlock, SpectralNormalizationConstraint
 
-class ResidualNetworkTest(unittest.TestCase):
-	X = tf.constant(keras.datasets.cifar10.load_data()[0][0][:100].astype('f')) # a single cifar image batch.
+class ResidualBlockTest(unittest.TestCase):
+	X = tf.constant(keras.datasets.cifar10.load_data()[0][0][:20].astype('f')) # a single cifar image batch.
+	dense_size = 100
 
-	def get_norm(self, w):
-		input_shape		= [1] + [int(i) for i in self.X.shape[1:]]
+	def _assert_inverse(self, residual_block, X):
+		sequential = Sequential()
+		sequential.add(residual_block)
 
-		# initialize u and v to norm 1 random vectors
-		v				= normalize(tf.random.normal((tf.reduce_prod(input_shape),)))
-
-		tmp				= tf.nn.conv2d(tf.reshape(v, input_shape), w, strides=[1,1], padding='SAME')
-		output_shape	= tmp.shape
-
-		u				= normalize(tf.random.normal((tf.reduce_prod(output_shape),)))
-
-		inp		= lambda v: tf.reshape(v, input_shape)
-		out		= lambda u: tf.reshape(u, output_shape)
-		flat	= lambda x: tf.reshape(x, [-1])
-		params	= {'strides': [1,1], 'padding': 'SAME'}
-		
-		# Power iteration
-		for _ in range(5):
-			v_s	= tf.nn.conv2d_transpose(out(u), w, output_shape=input_shape, **params)
-			v	= normalize(flat(v))
-
-			u_s = tf.nn.conv2d(inp(v), w, **params)
-			u	= normalize(flat(u))
-
-		# Normalization
-		vW		= tf.nn.conv2d(inp(v), w, **params)
-		sigma	= tf.tensordot(flat(vW), u, 1)
-		factor	= sigma / 0.9 # tf.maximum(1., sigma / 0.9)
-		return sigma, factor
-
-
-	def test_inverse(self):
-		r = ResidualBlock()
-
-		sn = SpectralNormalizationConstraint(0.9, self.X.shape, n_power_iter=5, strides=[1,1], padding='SAME')
-		r.add(Conv2D(3, kernel_size=(3,3), activation='elu',      padding='SAME', strides=[1,1], kernel_constraint=sn)) 
-		sn = SpectralNormalizationConstraint(0.9, self.X.shape, n_power_iter=5, strides=[1,1], padding='SAME')
-		r.add(Conv2D(1, kernel_size=(3,3), activation='elu',      padding='SAME', strides=[1,1], kernel_constraint=sn)) 
-		sn = SpectralNormalizationConstraint(0.9, [int(i) for i in self.X.shape[:-1]] + [1], n_power_iter=5, strides=[1,1], padding='SAME')
-		r.add(Conv2D(3, kernel_size=(3,3), activation=None,      padding='SAME', strides=[1,1], kernel_constraint=sn)) 
-
-		s = Sequential()
-		s.add(r)
 		optimizer = Adam()
 		loss = MeanSquaredError()
-		s.compile(optimizer=optimizer, loss=loss)
-		Z = s.predict(self.X)
+		sequential.compile(optimizer=optimizer, loss=loss) 
+	 	 
+		sequential.fit(X, X)
 
-		print('\n\n\n - - -  \n\n\n')
-		print(self.get_norm(r.layers[0].kernel))
-		print('\n\n\n - - -  \n\n\n')
+		Z = sequential.predict(X)
+		X_ = residual_block.call_inv(Z) 
 
-		s.fit(self.X, self.X, epochs=10)
+		self.assertTrue(np.allclose(X, X_, atol=1e-3, rtol=1e-3), np.max(np.abs(X - X_)))
+		
+	def test_dense_inverse(self):
+		# Flatten input
+		X = tf.reshape(self.X, (-1, tf.reduce_prod(self.X.shape[1:])))[:,:self.dense_size]
+		#####
+		rb  = ResidualBlock()
 
-		Xr = r.call_inv(Z)
-		A = np.allclose(self.X, Xr, atol=1e-3, rtol=1e-3)
+		snc = SpectralNormalizationConstraint(0.9, X.shape)
+		dense = Dense(self.dense_size, input_shape=X.shape, use_bias=False, kernel_constraint=snc)
+		rb.add(dense)
+		#####
 
-		print('\n\n\n - - -  \n\n\n')
-		print(self.get_norm(r.layers[0].kernel))
-		print('\n\n\n - - -  \n\n\n')
+		self._assert_inverse(rb, X)
 
-		# Plotting stuff
-		if not A:
-			rows=3
-			fig, ax = plt.subplots(rows + 1, 4)
-			ax[0, 0].set_title('X')
-			ax[0, 1].set_title('Rec')
-			ax[0, 2].set_title('Diff')
-			ax[0, 3].set_title('Z')
-			for i in range(rows):
-				ax[i, 0].imshow(tf.reshape(self.X[i], (32, 32, 3)) / 255.)
-				ax[i, 1].imshow(tf.reshape(Xr[i], (32, 32, 3)) / 255.)
-				ax[i, 2].imshow(tf.reshape(Xr[i] - self.X[i], (32, 32, 3)) / 255.)
-				ax[i, 3].imshow(tf.reshape(Z[i], (32, 32, 3)) / 255.)
+	def test_conv_inverse(self):
+		#####
+		rb  = ResidualBlock()
 
-			entry = tf.reduce_max(tf.abs(self.X - Xr))
-			truth = tf.equal(tf.abs(self.X - Xr), entry)
-			i = tf.argmax(tf.cast([tf.reduce_any(truth[i]) for i in range(len(self.X))], tf.float32))
-			ax[rows, 0].imshow(tf.reshape(self.X[i], (32, 32, 3)) / 255.)
-			ax[rows, 1].imshow(tf.reshape(Xr[i], (32, 32, 3)) / 255.)
-			ax[rows, 2].imshow(tf.reshape(Xr[i] - self.X[i], (32, 32, 3)) / 255.)
-			ax[rows, 3].imshow(tf.reshape(Z[i], (32, 32, 3)) / 255.)
-			plt.show()
+		snc = SpectralNormalizationConstraint(0.9, self.X.shape, strides=[1,1], padding='SAME')
+		conv = Conv2D(3, 
+				kernel_size=3, 
+				input_shape=self.X.shape, 
+				use_bias=False, 
+				kernel_constraint=snc, 
+				strides=[1,1], 
+				padding='SAME')
 
-		assert A, tf.reduce_max(tf.abs(self.X - Xr))
+		rb.add(conv)
+		#####
+
+		self._assert_inverse(rb, self.X)
+
+	def test_conv_inverse_deeper(self):
+		#####
+		rb  = ResidualBlock()
+		params = {'strides': [1,1], 'padding': 'SAME'}
+
+		def add_conv(kernels, input_shape):
+			snc = SpectralNormalizationConstraint(0.9, input_shape, **params)
+			conv = Conv2D(3, kernel_size=kernels, input_shape=input_shape, kernel_constraint=snc, **params)
+			rb.add(conv)
+			return conv.compute_output_shape(input_shape)
+
+		out_shape = self.X.shape
+		for i in [3, 1, 3]: 
+			out_shape = add_conv(i, out_shape)
+		#####
+
+		self._assert_inverse(rb, self.X)
 
