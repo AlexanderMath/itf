@@ -4,8 +4,10 @@ import sys
 sys.path.append("../")
 import invtf
 import invtf.layers
+import invtf.approximation_layers
 import tensorflow as tf
 import tensorflow.keras as keras
+from tensorflow.keras.layers import Conv2D
 import numpy as np
 import warnings
 
@@ -89,6 +91,29 @@ class TestJacobian(unittest.TestCase):
 		g.compile()
 		g.init(X[:100])
 		g.fit(X[:1], verbose=False)
+		self.assertJacobian(g, X)
+
+	def test_resblock_init(self):
+		X = TestJacobian.X
+		g = invtf.Generator()
+
+		rb  = invtf.approximation_layers.ResidualBlock(input_shape=X.shape)
+		params = {'strides': [1,1], 'padding': 'SAME'}
+
+		def add_conv(kernels, input_shape):
+			snc = invtf.approximation_layers.SpectralNormalizationConstraint(0.9, input_shape, **params)
+			conv = Conv2D(3, kernel_size=kernels, input_shape=input_shape, kernel_constraint=snc, **params)
+			rb.add(conv)
+			return conv.compute_output_shape(input_shape)
+
+		out_shape = X.shape
+		for i in [3, 1, 3]: 
+			out_shape = add_conv(i, out_shape)
+
+		g.add(rb)
+		g.compile()
+		g.init(X[:100])
+
 		self.assertJacobian(g, X)
 
 	"""def test_glow_init(self): 

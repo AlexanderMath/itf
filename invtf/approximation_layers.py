@@ -108,16 +108,16 @@ class ResidualBlock(keras.layers.Layer):
 	"""
 	unique_id = 1
 
-	def __init__(self):
-		super(ResidualBlock, self).__init__(name="res_block_%i"%ResidualBlock.unique_id)
+	def __init__(self, **kwargs):
+		super(ResidualBlock, self).__init__(name="res_block_%i"%ResidualBlock.unique_id, **kwargs)
 		ResidualBlock.unique_id += 1
-
 		self.layers				= []
 
 	def add(self, layer): self.layers.append(layer)
 
 	def build(self, input_shape, *args, **kwargs):
 		out_dim = input_shape
+		print(out_dim)
 		for layer in self.layers:
 			layer.build(input_shape=out_dim)
 			out_dim = layer.compute_output_shape(input_shape=out_dim)
@@ -149,7 +149,7 @@ class ResidualBlock(keras.layers.Layer):
 		"""
 		TODO:	We produce `N` random vectors and do the power series for all of them
 				and then we take the mean of these. This is not really described in the 
-				article [.. TODO ..] but it is done in their code `matrix_utils.py:94`.
+				article [.. iResNet TODO ..] but it is done in their code `matrix_utils.py:94`.
 		"""
 		N		= 10 # Number of trace samples  TODO: make dynamic
 		K		= 5  # Number of Series terms	TODO: make dynamic
@@ -160,18 +160,20 @@ class ResidualBlock(keras.layers.Layer):
 
 		# Will end up being shape (b, N, 1)
 		trLn	= 0.
-		for j in range(1, k+1): 
-			if j == 1:
-				W = v.clone()
+		for j in range(k): 
+			if j == 0:
+				W = V.clone()
 			# Due to chain rule, taking gradient of W is the same as wT @ J
 			W		= [tf.gradients(Z, X, grad_ys=W[:,i]) for i in range(N)]
 			W		= tf.stack(W, axis=1)
 			wT_J	= tf.reshape(grads, self.input_shape[0], N, 1, -1)
-			vFlat	= tf.reshape(v, self.input_shape[0], N, -1, 1)
+			vFlat	= tf.reshape(V, self.input_shape[0], N, -1, 1)
 
 			# Shape (b, N, 1)
 			product	= wT_J @ vFlat / float(k) 
 			tfLn = trLn + product * (1. if (k+1) % 2 == 0 else -1.)
 
 		return tfLn.mean(axis=1).squeeze()
+
+	def compute_output_shape(self, input_shape): return input_shape
 
