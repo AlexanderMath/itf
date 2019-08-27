@@ -97,7 +97,7 @@ class TestJacobian(unittest.TestCase):
 		X = TestJacobian.X
 		g = invtf.Generator()
 
-		rb  = invtf.approximation_layers.ResidualBlock(input_shape=X.shape)
+		rb  = invtf.approximation_layers.ResidualBlock(input_shape=X.shape[1:])
 		params = {'strides': [1,1], 'padding': 'SAME'}
 
 		def add_conv(kernels, input_shape):
@@ -111,8 +111,8 @@ class TestJacobian(unittest.TestCase):
 			out_shape = add_conv(i, out_shape)
 
 		g.add(rb)
-		g.compile()
 		g.init(X[:100])
+		g.compile()
 
 		self.assertJacobian(g, X)
 
