@@ -117,7 +117,6 @@ class ResidualBlock(keras.layers.Layer):
 
 	def build(self, input_shape, *args, **kwargs):
 		out_dim = input_shape
-		print(out_dim)
 		for layer in self.layers:
 			layer.build(input_shape=out_dim)
 			out_dim = layer.compute_output_shape(input_shape=out_dim)
@@ -174,6 +173,4 @@ class ResidualBlock(keras.layers.Layer):
 			tfLn = trLn + product * (1. if (k+1) % 2 == 0 else -1.)
 
 		return tfLn.mean(axis=1).squeeze()
-
-	def compute_output_shape(self, input_shape): return input_shape
 
