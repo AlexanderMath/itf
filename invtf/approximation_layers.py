@@ -144,33 +144,53 @@ class ResidualBlock(keras.layers.Layer):
 			X = Z - gx
 		return X
 
-	def log_det(self, X, Z):	
+	@tf.function
+	def log_det(self):	
 		"""
 		TODO:	We produce `N` random vectors and do the power series for all of them
 				and then we take the mean of these. This is not really described in the 
 				article [.. iResNet TODO ..] but it is done in their code `matrix_utils.py:94`.
 		"""
-		N		= 10 # Number of trace samples  TODO: make dynamic
-		K		= 5  # Number of Series terms	TODO: make dynamic
+		print("Log det!")
+		bs		= 1		# Fixed batch size for now TODO: make dynamic
+		N		= 10	# Number of trace samples  TODO: make dynamic
+		K		= 5		# Number of Series terms	TODO: make dynamic
+
+		print(self.input)
+		X		= self.input
+		# X = tf.random.normal((1, 32, 32, 3))
 
 		# Shape (b, N, h, w, c)
-		dim		= [self.input_shape[0], N] + self.input_shape[1:]
+		dim		= [bs, N] + list(X.shape[1:])
 		V		= tf.random.normal(dim)
 
-		# Will end up being shape (b, N, 1)
+		# Will end up being shape (bs, N, 1)
 		trLn	= 0.
-		for j in range(k): 
+		for j in range(K): 
 			if j == 0:
-				W = V.clone()
+				W = tf.identity(V)
 			# Due to chain rule, taking gradient of W is the same as wT @ J
-			W		= [tf.gradients(Z, X, grad_ys=W[:,i]) for i in range(N)]
-			W		= tf.stack(W, axis=1)
-			wT_J	= tf.reshape(grads, self.input_shape[0], N, 1, -1)
-			vFlat	= tf.reshape(V, self.input_shape[0], N, -1, 1)
+			W_list	= []
+			for i in range(N):
+				with tf.GradientTape() as tape:
+					tape.watch(X)
+					Z_ = self.call(X)
+				grads = tape.gradient(Z_, X, output_gradients=W[:,i])
+				W_list.append(grads)
+
+			# W		= [tf.gradients(Z, X, grad_ys=W[:,i]) for i in range(N)]
+			W		= tf.stack(W_list, axis=1)
+			print("W:", W.shape)
+			wT_J	= tf.reshape(W, (-1, N, 1, tf.reduce_prod(X.shape[1:])))
+			print("WT_J:", wT_J.shape)
+			vFlat	= tf.reshape(V,	(-1, N, tf.reduce_prod(X.shape[1:]), 1))
+			print("vFlat:", vFlat.shape)
 
 			# Shape (b, N, 1)
-			product	= wT_J @ vFlat / float(k) 
-			tfLn = trLn + product * (1. if (k+1) % 2 == 0 else -1.)
+			product	= wT_J @ vFlat / float(K) 
+			print("Product:", product.shape)
+			tfLn = trLn + product * (1. if (K+1) % 2 == 0 else -1.)
 
-		return tfLn.mean(axis=1).squeeze()
+		print("tfLn final:", tfLn.shape)
+		return tf.squeeze(tf.reduce_mean(tfLn, axis=1))
 

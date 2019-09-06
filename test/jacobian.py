@@ -34,19 +34,29 @@ class TestJacobian(unittest.TestCase):
 
 		"""
 		X = tf.constant(X)
-
+		print("Input before", g.layers[0].input)
 		with tf.GradientTape(persistent=True) as t: 
 			t.watch(X)
 			z = g.call(X)
 
-		J = t.jacobian(z, X, experimental_use_pfor=False)
+		print("Input after", g.layers[0].input)
+		assert False
 
+		print("Jacobian")
+		J = t.jacobian(z, X, experimental_use_pfor=False)
+		print(J.shape)
+
+		print("Reshape")
 		J = tf.reshape(J, (32*32*3, 32*32*3))
 
+		print("Start Log 1")
 		lgdet1 = tf.math.log(tf.linalg.det(J)).numpy()
-		lgdet2 = g.log_det().numpy()
 
-		#print(lgdet1, lgdet2)
+		# TODO: Probably need a better structure for Jacobian determinants.
+		print("Start Log 2")
+		lgdet2 = g.log_det()
+
+		print("Look at this: ", lgdet1, lgdet2)
 		
 		# If the following equation is element-wise True, then allclose returns True.
 		# 		absolute(a - b) <= (atol + rtol * absolute(b))
@@ -56,6 +66,9 @@ class TestJacobian(unittest.TestCase):
 		self.assertTrue(A)
 		#print("\t", lgdet1, lgdet2, "\t", end="")
 		
+	def execute_with_session(op):
+		pass
+
 
 	def test_actnorm_init(self): 
 		X = TestJacobian.X
@@ -94,9 +107,11 @@ class TestJacobian(unittest.TestCase):
 		self.assertJacobian(g, X)
 
 	def test_resblock_init(self):
+
 		X = TestJacobian.X
 		g = invtf.Generator()
 
+		# Create model
 		rb  = invtf.approximation_layers.ResidualBlock(input_shape=X.shape[1:])
 		params = {'strides': [1,1], 'padding': 'SAME'}
 
@@ -109,11 +124,16 @@ class TestJacobian(unittest.TestCase):
 		out_shape = X.shape
 		for i in [3, 1, 3]: 
 			out_shape = add_conv(i, out_shape)
+		# End create model
 
 		g.add(rb)
-		g.init(X[:100])
+		g.init(X)
+		print("Compile")
 		g.compile()
-
+		print("Fit")
+		g.fit(X, batch_size=2)
+		print("Done fit")
+		print("AssertJacobian")
 		self.assertJacobian(g, X)
 
 	"""def test_glow_init(self): 

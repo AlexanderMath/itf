@@ -407,7 +407,6 @@ class Generator(keras.Model):
 
 
 
-
 	def log_det(self):	
 		"""
 			Computes the log determinant by calling all layers. This is called by
@@ -416,13 +415,11 @@ class Generator(keras.Model):
 		"""
 		logdet = 0.
 
-		for layer in self.layers: 
+		for layer in self.layers[::-1]: 
 			if isinstance(layer, tf.keras.layers.InputLayer): 	continue 
 			logdet += layer.log_det()
 			
 		return logdet
-
-
 
 
 
@@ -484,6 +481,7 @@ class Generator(keras.Model):
 		# If list is empty. 
 		if not self._layers:	 
 			batch_shape, dtype = training_utils.get_input_shape_and_dtype(layer)
+			print(batch_shape, "Batch Shape")
 			if batch_shape:
 					# Instantiate an input layer.
 					x = input_layer.Input(
