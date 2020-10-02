@@ -58,7 +58,8 @@ if __name__ == "__main__":
 
 	# Initialize plots 
 	fig_rec, 	ax_rec 		= plt.subplots(1, 3)
-	fig_fakes, 	ax_fakes 	= plt.subplots(5, 5) 
+	fig_fakes, 	ax_fakes 	= plt.subplots(5, 5, figsize=(6, 6)) 
+	#plt.subplots_adjust(wspace=0, hspace=0)
 	fig_loss, 	ax_loss 	= plt.subplots()
 	# OBS: Show plots on second screen, remove if you only use one screen. 
 	fig_rec.	canvas.manager.window.wm_geometry("+2000+0")
@@ -111,18 +112,19 @@ if __name__ == "__main__":
 
 		ax_rec[2].imshow(g.rec(X[:1]).reshape(img_shape)/255)
 		ax_rec[2].set_title("Reconstruction")
-		if i == 0: 
-			fig_rec.tight_layout()
-			fig_fakes.tight_layout()
 
 
 		stds = [1.0, 0.8, 0.6, 0.5, 0.4] 
 		for k in range(5): 
 			current_std = stds[k]
 			fakes 		= g.sample(5, fix_latent=True, std=current_std)
-			ax_fakes[0, k].set_title( current_std )
+			#ax_fakes[0, k].set_title( current_std )
 			for l in range(5): 
 				ax_fakes[k,l].imshow(fakes[l].reshape(img_shape)/255)
+
+		#if i == 0: 
+		#	fig_rec.tight_layout()
+		#	fig_fakes.tight_layout()
 
 		plt.pause(.1)
 

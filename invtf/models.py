@@ -120,6 +120,7 @@ class RealNVP():
 	def model(X):  
 		input_shape = X.shape[1:]
 		d 			= np.prod(input_shape)
+		c 			= X.shape[-1]
 
 		g = invtf.Generator(latent.Normal()) 
 
@@ -129,31 +130,45 @@ class RealNVP():
 
 		# Build model using additive coupling layers. 
 		g.add(Squeeze())
+		c = c * 4 
 
 		strategy = SplitChannelsStrategy()
 
-		for i in range(0, 2): 
+		for i in range(0, 3): 
 			for j in range(2): 
 
+				g.add(ActNorm()) 		# not in realnvp model. 
 				ac = AffineCoupling(part=j%2, strategy=strategy)
-				ac.add(Flatten())
-				ac.add(Dense(100, activation="relu"))
-				ac.add(Dense(100, activation="relu"))
-				ac.add(Dense(100, activation="relu"))
-				ac.add(Dense(d, bias_initializer="ones", kernel_initializer="zeros"))
+				ac.add(Conv2D(filters=64, kernel_size=3, padding="SAME", bias_initializer="ones", kernel_initializer="zeros"))
+				ac.add(Conv2D(filters=512, kernel_size=3, padding="SAME", bias_initializer="ones", kernel_initializer="zeros"))
+				ac.add(Conv2D(filters=c, kernel_size=3, padding="SAME", bias_initializer="ones", kernel_initializer="zeros"))
 
 				g.add(ac) 
 			
+			for j in range(2): 
+				g.add(ActNorm()) 		# not in realnvp model. 
+
+				ac = AffineCoupling(part=j%2, strategy=strategy)
+				ac.add(Flatten())
+				ac.add(Dense(200, activation="relu"))
+				ac.add(Dense(200, activation="relu"))
+				ac.add(Dense(d, bias_initializer="ones", kernel_initializer="zeros"))
+
+				g.add(ac) 
+
+
 			g.add(Squeeze())
+			c = c * 4 
 
 			g.add(MultiScale()) # adds directly to output. For simplicity just add half of channels. 
 			d = d//2
+			c = c // 2 
+			
 
 		ac = AffineCoupling(part=j%2, strategy=strategy)
 		ac.add(Flatten())
-		ac.add(Dense(100, activation="relu"))
-		ac.add(Dense(100, activation="relu"))
-		ac.add(Dense(100, activation="relu"))
+		ac.add(Dense(200, activation="relu"))
+		ac.add(Dense(200, activation="relu"))
 		ac.add(Dense(d, bias_initializer="ones", kernel_initializer="zeros"))
 
 		g.add(ac) 
