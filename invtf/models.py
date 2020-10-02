@@ -74,13 +74,13 @@ class NICE():
 		g.add(Normalize			(input_shape=[d]))
 
 		# Build model using additive coupling layers. 
-		for i in range(0, 4): 
+		for i in range(0, 8): 
 
 			ac = AdditiveCoupling(part=i%2, strategy=EvenOddStrategy())
-			ac.add(Dense(1000, activation="relu", bias_initializer="zeros", kernel_initializer="zeros")) 
-			ac.add(Dense(1000, activation="relu", bias_initializer="zeros", kernel_initializer="zeros"))
-			ac.add(Dense(1000, activation="relu", bias_initializer="zeros", kernel_initializer="zeros"))
-			ac.add(Dense(1000, activation="relu", bias_initializer="zeros", kernel_initializer="zeros"))
+			ac.add(Dense(2000, activation="relu", bias_initializer="zeros", kernel_initializer="zeros")) 
+			ac.add(Dense(2000, activation="relu", bias_initializer="zeros", kernel_initializer="zeros"))
+			ac.add(Dense(2000, activation="relu", bias_initializer="zeros", kernel_initializer="zeros"))
+			ac.add(Dense(2000, activation="relu", bias_initializer="zeros", kernel_initializer="zeros"))
 			ac.add(Dense(d//2, bias_initializer="zeros")) 
 
 			g.add(ac) 

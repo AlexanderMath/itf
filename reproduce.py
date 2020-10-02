@@ -48,7 +48,7 @@ if __name__ == "__main__":
 		X = X.reshape((X.shape[0], -1))
 		g = invtf.models.NICE.model(X)
 	if args.model == "realnvp": g = invtf.models.RealNVP.model(X)
-	if args.model == "glow":    g = invtf.models.Glow.model(X)
+	if args.model == "glow":	g = invtf.models.Glow.model(X)
 	if args.model == "flowpp":  g = invtf.models.FlowPP.model(X)
 	if args.model == "conv3d":  g = invtf.models.Conv3D.model(X)
 	if args.model == "iresnet": raise NotImplementedError()
@@ -56,10 +56,11 @@ if __name__ == "__main__":
 	# Print summary of model. 
 	g.summary()
 
-	# Initialize plots (TODO: window position might break from Ubuntu -> win/mac)
+	# Initialize plots 
 	fig_rec, 	ax_rec 		= plt.subplots(1, 3)
 	fig_fakes, 	ax_fakes 	= plt.subplots(5, 5) 
 	fig_loss, 	ax_loss 	= plt.subplots()
+	# OBS: Show plots on second screen, remove if you only use one screen. 
 	fig_rec.	canvas.manager.window.wm_geometry("+2000+0")
 	fig_fakes.	canvas.manager.window.wm_geometry("+2600+0")
 	fig_loss.	canvas.manager.window.wm_geometry("+3200+0")
@@ -100,7 +101,7 @@ if __name__ == "__main__":
 		ax_loss.set_title(args.problem + " " + args.model)
 		
 		# Plot fake/real/reconstructed image. 
-		fake = g.sample(1, fix_latent=True)
+		fake = g.sample(1, fix_latent=True, std=0.7)
 
 		ax_rec[0].imshow(fake.reshape(img_shape)/255)
 		ax_rec[0].set_title("Fake")
@@ -121,10 +122,11 @@ if __name__ == "__main__":
 			fakes 		= g.sample(5, fix_latent=True, std=current_std)
 			ax_fakes[0, k].set_title( current_std )
 			for l in range(5): 
-				ax_fakes[k,l].imshow(fakes[l]/255)
+				ax_fakes[k,l].imshow(fakes[l].reshape(img_shape)/255)
 
 		plt.pause(.1)
 
 		fig_fakes.savefig(folder_path + "img_%i.png"%(i+1))
 		fig_loss.savefig(folder_path + "loss.png")
+		np.savez(folder_path + "imgs_%i.npz"%(i+1), fake)
 
