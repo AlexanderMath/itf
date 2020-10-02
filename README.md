@@ -1,63 +1,18 @@
-*cite us using <a href="">bibtex</a>*
 # InvTF
-Train invertible generative models using the simplicity of Keras (aka normalizing flows).
+Open-source version of internal framework used in research project. There are a few known bugs, so the use of some features like the following are at own risk:
+- O(1) or O(sqrt(L)) memory backpropagation.
+- Variational dequantization. 
 
-<b>Example:</b>
-
-```
-import invtf
-import tensorflow.keras as keras
-
-# Load data
-X = invtf.datasets.cifar10()
-input_shape = X.shape[1:]
-
-# Model
-g = invtf.Generator()
-
-# Pre-process
-g.add(invtf.dequantize.UniformDequantize(input_shape=input_shape)) 
-g.add(invtf.layers.Normalize()) 
-
-# Actual model. 
-g.add(invtf.layers.Squeeze())
-
-for i in range(10): 
-	g.add(invtf.layers.ActNorm())
-	g.add(invtf.layers.Conv3DCirc())
-	g.add(invtf.layers.AdditiveCouplingReLU()) 
-	
-	if i == 5: g.add(invtf.layers.MultiScale())
-
-# Prepare model for training and print summary. 
-g.compile()  
-g.init(X[:1000])  
-g.summary()
-
-# Train model. 
-g.fit(X, batch_size=512)
-```
-
-<img src="faces.png">
-
-Most recent invertible generative model [1,2,3,4] have been <a href="">reproduced</a> in InvTF. Pretrained models are automatically downloaded when needed.
-
-<b>Example</b>: Use pretrained model.
+The main focus was not generative performance, but the development of the software architecture and relationship between different components used by Normalizing Flows. 
+The animation below are produced using 
 
 ```
-from invtf import Glow
-
-glow.interpolate(faces()[0], faces()[1])
-
-glow.generate(10)
+reproduce.py --problem celeb --model realnvp
+reproduce.py --problem cifar --model realnvp
 ```
 
-<img src="interpolate.png">
-<img src="generated.png">
-
-Please see our <a href="">tutorial</a> and <a href="">documentation</a> for more information. 
-
-TLDR: Easily train reversible generative models with Keras.
+<img src="celeb.gif">
+<img src="cifar10.gif">
 
 # Details
 
