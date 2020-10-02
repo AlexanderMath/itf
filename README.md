@@ -1,18 +1,16 @@
 # InvTF
-Open-source version of internal framework used in research project. There are a few known bugs, so the use of some features like the following are at own risk:
+Open-source version of internal framework used in research project. The following features have known bugs, use them at own risk! 
 - O(1) or O(sqrt(L)) memory backpropagation.
 - Variational dequantization. 
-
-The main focus was not generative performance, but the development of the software architecture and relationship between different components used by Normalizing Flows. 
 The animation below are produced using 
-
 ```
 reproduce.py --problem celeb --model realnvp
 reproduce.py --problem cifar --model realnvp
 ```
-
-<img src="celeb.gif">
-<img src="cifar10.gif">
+<div style="float: left; ">
+<img src="animations/celeb.gif" style="width: 40%">
+<img src="animations/cifar10.gif" style="width: 40%">
+</div>
 
 # Details
 
