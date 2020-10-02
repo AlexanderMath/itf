@@ -7,6 +7,7 @@
 Open-source version of internal framework used in research project. The following features have known bugs, use them at own risk! 
 - O(1) or O(sqrt(L)) memory backpropagation.
 - Variational dequantization. 
+
 The animation above were produced by runnign:  
 ```
 reproduce.py --problem celeb --model realnvp
