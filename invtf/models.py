@@ -5,6 +5,8 @@ from invtf.dequantize 	import *
 from tensorflow			import keras
 from tensorflow.keras 	import Sequential
 
+from invtf.coupling_layers import * 
+
 from tensorflow.keras.layers import ReLU, Dense, Flatten, Reshape, Conv2D
 from tensorflow.keras.models import Sequential
 
@@ -64,8 +66,8 @@ class NICE():
 		n, d = X.shape
 
 		# This differs from MNIST to CIFAR in original article. 
-		#g = invtf.Generator(latent.Logistic(d))  
-		g = invtf.Generator(latent.Normal(d))  
+		#g = invtf.Generator(latent.Logistic())  
+		g = invtf.Generator(latent.Normal())   
 
 		# Pre-process steps. 
 		g.add(UniformDequantize	(input_shape=[d])) 
@@ -119,7 +121,7 @@ class RealNVP():
 		input_shape = X.shape[1:]
 		d 			= np.prod(input_shape)
 
-		g = invtf.Generator(latent.Normal(d)) 
+		g = invtf.Generator(latent.Normal()) 
 
 		# Pre-process steps. 
 		g.add(UniformDequantize	(input_shape=input_shape)) 
@@ -232,7 +234,7 @@ class Glow():
 		input_shape = X.shape[1:]
 		d 			= np.prod(input_shape)
 
-		g = invtf.Generator(latent.Normal(d)) 
+		g = invtf.Generator(latent.Normal()) 
 
 		# Pre-process steps. 
 		g.add(keras.layers.InputLayer(input_shape=input_shape))

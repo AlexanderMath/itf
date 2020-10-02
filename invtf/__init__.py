@@ -361,14 +361,13 @@ class Generator(keras.Model):
 				Alternatively, one could have scaled log_det by the size of the mini-batch. 
 			
 		"""
-
-		d			= tf.cast(tf.reduce_prod(y_pred.shape[1:]), 		tf.float32)
-		norm		= d * np.log(2.).astype(np.float32) 
+		d				= tf.cast(tf.reduce_prod(y_pred.shape[1:]), 		tf.float32)
+		normalization	= d * np.log(2.).astype(np.float32) 
 
 		# Divide by /d to get per dimension. 
 		# Divide by log(2) to go from log base E (default in tensorflow) to log base 2. 
 		# https://www.tensorflow.org/versions/r2.0/api_docs/python/tf/math/log
-		normal 		= self.latent.log_density(y_pred) / norm 
+		normal 		= self.latent.log_density(y_pred) / normalization
 		batch_size 	= tf.cast(tf.shape(y_pred)[0], 	tf.float32)
 		normal		= normal / batch_size
 		return 		- normal
